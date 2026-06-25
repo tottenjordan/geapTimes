@@ -40,7 +40,7 @@ container (Model Garden → endpoint); side-by-side comparison DAG.
 | 1.5 | `data_notebooks/01_citibike_prep.ipynb` | done | `bc43525` |
 | 1.6 | `scripts/setup_gcp.py` (+ `geaptimes.gcp`) | done | `416b4b2` |
 | 1.7 | Notebook kernel standardization + cloud validation | done | `78908a4` |
-| 1.8 | Data-layer hardening + end-to-end build on hybrid-vertex | in progress | — |
+| 1.8 | Data-layer hardening + end-to-end build on hybrid-vertex | done | `330893c` |
 
 ### 1.1 Repo scaffold + standards + tracker
 `git init`; `uv init --package` (name `geaptimes`, py3.11); `pyproject.toml` with ruff/pytest/ty
