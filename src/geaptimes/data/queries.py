@@ -1,0 +1,142 @@
+"""BigQuery SQL builders for the Citibike + weather forecasting tables.
+
+Mirrors the statmike ``_source`` -> ``_prepped`` pattern:
+
+* :func:`build_source_query` aggregates Citibike trips to a daily, per-station series, joins
+  NOAA GSOD weather + station metadata, and adds calendar features.
+* :func:`build_prepped_query` adds a ``splits`` column (TRAIN/VALIDATE/TEST) by date range off
+  the global max date.
+
+SQL is assembled from trusted :class:`~geaptimes.schemas.DataConfig` values (not user input).
+"""
+
+from geaptimes.schemas import DataConfig, ProjectConfig
+
+SOURCE_TABLE_NAME = "citibike_daily_source"
+PREPPED_TABLE_NAME = "citibike_daily_prepped"
+
+# GSOD missing-value sentinels.
+_TEMP_MISSING = "9999.9"
+_PRCP_MISSING = "99.99"
+
+# Default GSOD year window (Citibike public table is frozen ~2018).
+_DEFAULT_START_YEAR = "2013"
+_DEFAULT_END_YEAR = "2019"
+
+# Length of the YYYY prefix in an ISO date string.
+_YEAR_PREFIX_LEN = 4
+
+
+def table_id(project: ProjectConfig, name: str) -> str:
+    """Fully-qualified ``project.dataset.table`` id."""
+    return f"{project.id}.{project.bq_dataset}.{name}"
+
+
+def _year(date_str: str | None, default: str) -> str:
+    """Extract the YYYY prefix from an ISO date, or fall back to ``default``."""
+    if date_str and len(date_str) >= _YEAR_PREFIX_LEN and date_str[:_YEAR_PREFIX_LEN].isdigit():
+        return date_str[:_YEAR_PREFIX_LEN]
+    return default
+
+
+def build_source_query(data: DataConfig, destination: str) -> str:
+    """Build ``CREATE OR REPLACE TABLE <destination>`` for the daily source table."""
+    series = data.series_column
+    time = data.time_column
+    target = data.target_column
+
+    # Optional explicit date filter on the trips.
+    date_filter = ""
+    if data.date_range.start:
+        date_filter += f"\n    AND DATE(starttime) >= DATE('{data.date_range.start}')"
+    if data.date_range.end:
+        date_filter += f"\n    AND DATE(starttime) <= DATE('{data.date_range.end}')"
+
+    y0 = _year(data.date_range.start, _DEFAULT_START_YEAR)
+    y1 = _year(data.date_range.end, _DEFAULT_END_YEAR)
+
+    if data.gap_fill:
+        # Per-station active-window date spine, zero-filling no-trip days.
+        series_cte = f"""bounds AS (
+    SELECT {series}, MIN({time}) AS d0, MAX({time}) AS d1
+    FROM daily GROUP BY {series}
+),
+spine AS (
+    SELECT b.{series}, d AS {time}
+    FROM bounds b, UNNEST(GENERATE_DATE_ARRAY(b.d0, b.d1)) AS d
+),
+series_tbl AS (
+    SELECT
+        s.{series}, s.{time},
+        IFNULL(d.{target}, 0) AS {target},
+        d.avg_tripduration, d.pct_subscriber, d.ratio_gender
+    FROM spine s
+    LEFT JOIN daily d USING ({series}, {time})
+)"""
+    else:
+        series_cte = "series_tbl AS (SELECT * FROM daily)"
+
+    return f"""CREATE OR REPLACE TABLE `{destination}` AS
+WITH top_stations AS (
+    SELECT {series}
+    FROM `{data.trips_table}`
+    WHERE {series} IS NOT NULL
+    GROUP BY {series}
+    ORDER BY COUNT(*) DESC
+    LIMIT {data.station_filter.top_n}
+),
+daily AS (
+    SELECT
+        {series},
+        DATE(starttime) AS {time},
+        COUNT(*) AS {target},
+        AVG(tripduration) AS avg_tripduration,
+        AVG(IF(usertype = 'Subscriber', 1.0, 0.0)) AS pct_subscriber,
+        SAFE_DIVIDE(COUNTIF(gender = 1), NULLIF(COUNTIF(gender IN (1, 2)), 0)) AS ratio_gender
+    FROM `{data.trips_table}`
+    WHERE {series} IN (SELECT {series} FROM top_stations){date_filter}
+    GROUP BY {series}, {time}
+),
+{series_cte},
+weather AS (
+    SELECT
+        PARSE_DATE('%Y%m%d', CONCAT(year, mo, da)) AS {time},
+        NULLIF(temp, {_TEMP_MISSING}) AS temp,
+        NULLIF(prcp, {_PRCP_MISSING}) AS prcp
+    FROM `{data.weather_dataset}.gsod*`
+    WHERE _TABLE_SUFFIX BETWEEN '{y0}' AND '{y1}'
+        AND stn = '{data.weather.station_usaf}'
+        AND wban = '{data.weather.station_wban}'
+),
+meta AS (
+    SELECT name AS {series}, capacity, region_id, latitude, longitude
+    FROM `{data.stations_table}`
+)
+SELECT
+    t.{series}, t.{time}, t.{target},
+    t.avg_tripduration, t.pct_subscriber, t.ratio_gender,
+    w.temp, w.prcp,
+    EXTRACT(DAYOFWEEK FROM t.{time}) AS day_of_week,
+    EXTRACT(MONTH FROM t.{time}) AS month,
+    IF(EXTRACT(DAYOFWEEK FROM t.{time}) IN (1, 7), 1, 0) AS is_weekend,
+    m.capacity, m.region_id, m.latitude, m.longitude
+FROM series_tbl t
+LEFT JOIN weather w USING ({time})
+LEFT JOIN meta m USING ({series})
+"""
+
+
+def build_prepped_query(data: DataConfig, source: str, destination: str) -> str:
+    """Build ``CREATE OR REPLACE TABLE <destination>`` adding the ``splits`` column."""
+    time = data.time_column
+    test = data.splits.test_length
+    test_plus_val = data.splits.test_length + data.splits.validate_length
+    return f"""CREATE OR REPLACE TABLE `{destination}` AS
+SELECT *,
+    CASE
+        WHEN {time} > DATE_SUB((SELECT MAX({time}) FROM `{source}`), INTERVAL {test} DAY) THEN 'TEST'
+        WHEN {time} > DATE_SUB((SELECT MAX({time}) FROM `{source}`), INTERVAL {test_plus_val} DAY) THEN 'VALIDATE'
+        ELSE 'TRAIN'
+    END AS splits
+FROM `{source}`
+"""

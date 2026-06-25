@@ -63,6 +63,10 @@ ignore = [
 "scripts/**/*.py" = [
     "T201",     # print allowed in CLI scripts
 ]
+"src/geaptimes/data/queries.py" = [
+    "S608",     # SQL built from trusted config (not user input) by design
+    "E501",     # keep SQL templates readable
+]
 
 [tool.ruff.format]
 quote-style = "double"
