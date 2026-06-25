@@ -26,7 +26,16 @@ this document. (`CLAUDE.md` links here.)
 
 - `src/` layout: the importable package is `src/geaptimes/`. Import as `from geaptimes... import ...`.
 - Config in `config/`, notebooks in `data_notebooks/`, CLI/ops scripts in `scripts/`,
-  durable session notes in `docs/notes/`.
+  durable session notes in `docs/notes/`, archived plans in `docs/plans/`.
+
+## Planning artifacts
+
+- `PLANS.md` is the **living tracker** (Tier 1 roadmap + Tier 2 items with status and commit
+  hashes); edited in place, history in git.
+- Each **approved per-stage plan** is snapshotted to `docs/plans/NNN_<slug>.md` at approval time
+  (immutable; `<slug>` is the plan title lowercased with spaces → `-`). See
+  [`docs/plans/README.md`](./docs/plans/README.md). Do not edit a snapshot after the fact —
+  course corrections live in `PLANS.md` and git.
 
 ## Configuration
 

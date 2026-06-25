@@ -4,6 +4,9 @@ Living tracker. **Tier 1** is a coarse master roadmap of all stages; **Tier 2** 
 *active* stage into numbered items with status and commit hash. Later stages are expanded
 just-in-time when reached. Item IDs are stable and map to commits.
 
+Each approved per-stage plan is archived immutably under [`docs/plans/`](docs/plans/) at approval
+time; this file is the living view of progress.
+
 Status legend: `pending` · `in progress` · `done` · `blocked`
 
 ---
@@ -12,8 +15,8 @@ Status legend: `pending` · `in progress` · `done` · `blocked`
 
 | Stage | Title | Status |
 |-------|-------|--------|
-| 1 | Data Architecture & Config Schema | items done — STOP (awaiting approval) |
-| 2 | Model Factory & Forecaster Abstractions | pending |
+| 1 | Data Architecture & Config Schema | done |
+| 2 | Model Factory & Forecaster Abstractions | in progress |
 | 3 | Experiment Tracking & DOE Framework | pending |
 | 4 | Managed Pipelines & Cloud Orchestration | pending |
 | 5 | Standardized Evaluation & Entry Point | pending |
@@ -29,7 +32,71 @@ container (Model Garden → endpoint); side-by-side comparison DAG.
 
 ---
 
-## Tier 2 — Stage 1 (Data Architecture & Config Schema)
+## Tier 2 — Stage 2 (Model Factory & Forecaster Abstractions) — ACTIVE
+
+All three backends are **code-complete but not executed** in Stage 2 (no model downloads, no BQ
+jobs, no Vertex spend); first live runs happen in Stage 3. Forecasters lazy-load / inject clients
+so they import and unit-test fully offline. Every backend returns the same `ForecastResult` shape
+(`QUANTILES = [0.1, 0.3, 0.5, 0.7, 0.9]` → columns `q10, q30, q50, q70, q90`).
+
+| # | Item | Status | Commit |
+|---|------|--------|--------|
+| 2.1 | `models/base.py` — `Forecaster` ABC + `ForecastResult` + `QUANTILES` | done | `b8961e5` |
+| 2.2 | `data/queries.py` — `train`/`infer` builders (closes deferred 1.10) | done | `6b7d30a` |
+| 2.3 | `models/timesfm.py` — `TimesFMForecaster` (in-process, device-agnostic) | done | `475bf02` |
+| 2.4 | `models/bqml.py` — `BQMLForecaster` (ARIMA_PLUS_XREG SQL) | done | `97a07f6` |
+| 2.5 | `models/automl.py` — `AutoMLForecaster` (managed job config) | done | `052f7ba` |
+| 2.6 | `models/factory.py` — `ForecastFactory` | pending | |
+| 2.7 | Demo — `02_timesfm_local.ipynb` + `scripts/demo_timesfm.py` | pending | |
+
+### 2.1 `models/base.py`
+`Forecaster` ABC (`fit()` / `predict() -> ForecastResult`), `ForecastResult` dataclass
+(`predictions` long DataFrame + `metadata`), `QUANTILES` and canonical prediction column names as
+module constants. No backend logic.
+
+### 2.2 `data/queries.py` train/infer builders
+`build_train_query` (rows where `splits != 'TEST'`) and `build_infer_query` (future `horizon`
+rows per series; calendar features derivable from generated dates, weather/target NULL beyond the
+frozen window — documented inline, refined in Stage 4). Both emit labelled `CREATE OR REPLACE
+TABLE`. Closes the Stage 1.10 deferral.
+
+### 2.3 `models/timesfm.py`
+`TimesFMForecaster`: lazy `from_pretrained` + `compile(ForecastConfig(...))`; device from
+`execution.target` with `cuda.is_available()` fallback; `fit()` no-op (zero-shot); `predict()`
+pulls per-series context from the prepped table and maps point + deciles → standardized columns.
+Model loader + dataframe loader injected for offline tests.
+
+### 2.4 `models/bqml.py`
+`BQMLForecaster`: `build_create_model_sql` (`ARIMA_PLUS_XREG`/`ARIMA_PLUS`, id/timestamp/data
+cols, `holiday_region`, labels; XREG selects `available_at_forecast_columns`) +
+`build_forecast_sql` (`ML.FORECAST`, XREG joins the `infer` table). BQ client injected; tests are
+SQL-string + result-mapping only.
+
+### 2.5 `models/automl.py`
+`AutoMLForecaster`: builds `AutoMLForecastingTrainingJob` constructor + `.run()` kwargs from
+config — column roles from `CovariateRoles`, `forecast_horizon`, `context_window`,
+`data_granularity_unit='day'`, `predefined_split_column_name='splits'`, `quantiles=QUANTILES`,
+`holiday_regions`, `labels`. Gated (not executed); `aiplatform` injected.
+
+### 2.6 `models/factory.py`
+`ForecastFactory.create(model_cfg, cfg)` dispatch on `params.type`; `from_config(cfg)` builds all
+**enabled** models; unknown type raises.
+
+### 2.7 Demo
+`data_notebooks/02_timesfm_local.ipynb` (+ thin `scripts/demo_timesfm.py`): load config →
+`ForecastFactory.create` TimesFM → `predict()` → plot vs TEST actuals with quantile band.
+`geaptimes` kernel pinned. Authored + runnable; first executed in Stage 3.
+
+### Stage 2 verification
+- **Offline only** (per "none run"): `uv run ruff check .` → `uv run ruff format --check .` →
+  `uv run ty check` → `uv run pytest`; then construct all enabled forecasters via
+  `ForecastFactory.from_config(...)` without triggering any download/BQ/Vertex (lazy load).
+- **STOP** checkpoint: present the abstraction, factory dispatch, the three backend wrappers, and
+  the train/infer builders.
+
+---
+
+## Tier 2 — Stage 1 (Data Architecture & Config Schema) — COMPLETE
 
 | # | Item | Status | Commit |
 |---|------|--------|--------|
