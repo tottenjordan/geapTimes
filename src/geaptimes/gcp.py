@@ -8,6 +8,7 @@ import argparse
 
 from google.cloud import bigquery, storage
 
+from geaptimes.constants import RESOURCE_LABELS
 from geaptimes.schemas import ExperimentConfig, ProjectConfig
 from geaptimes.utils.logger import get_logger
 
@@ -25,6 +26,7 @@ def ensure_dataset(project: ProjectConfig, *, dry_run: bool) -> None:
     client = bigquery.Client(project=project.id)
     dataset = bigquery.Dataset(dataset_id)
     dataset.location = project.bq_location
+    dataset.labels = RESOURCE_LABELS
     client.create_dataset(dataset, exists_ok=True)
     logger.info("Ensured BigQuery dataset %s", dataset_id)
 
@@ -41,6 +43,7 @@ def ensure_bucket(project: ProjectConfig, *, dry_run: bool) -> None:
     if bucket.exists():
         logger.info("GCS bucket gs://%s already exists", project.gcs_bucket)
         return
+    bucket.labels = RESOURCE_LABELS
     client.create_bucket(bucket, location=project.region)
     logger.info("Created GCS bucket gs://%s", project.gcs_bucket)
 

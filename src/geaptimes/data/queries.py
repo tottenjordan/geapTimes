@@ -10,6 +10,7 @@ Mirrors the statmike ``_source`` -> ``_prepped`` pattern:
 SQL is assembled from trusted :class:`~geaptimes.schemas.DataConfig` values (not user input).
 """
 
+from geaptimes.constants import bq_labels_option
 from geaptimes.schemas import DataConfig, ProjectConfig
 
 # GSOD missing-value sentinels.
@@ -73,7 +74,8 @@ series_tbl AS (
     else:
         series_cte = "series_tbl AS (SELECT * FROM daily)"
 
-    return f"""CREATE OR REPLACE TABLE `{destination}` AS
+    return f"""CREATE OR REPLACE TABLE `{destination}`
+{bq_labels_option()} AS
 WITH top_stations AS (
     SELECT {series}
     FROM `{data.trips_table}`
@@ -141,7 +143,8 @@ def build_prepped_query(data: DataConfig, source: str, destination: str) -> str:
     time = data.time_column
     test = data.splits.test_length
     test_plus_val = data.splits.test_length + data.splits.validate_length
-    return f"""CREATE OR REPLACE TABLE `{destination}` AS
+    return f"""CREATE OR REPLACE TABLE `{destination}`
+{bq_labels_option()} AS
 SELECT *,
     CASE
         WHEN {time} > DATE_SUB((SELECT MAX({time}) FROM `{source}`), INTERVAL {test} DAY) THEN 'TEST'

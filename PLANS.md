@@ -41,6 +41,7 @@ container (Model Garden → endpoint); side-by-side comparison DAG.
 | 1.6 | `scripts/setup_gcp.py` (+ `geaptimes.gcp`) | done | `416b4b2` |
 | 1.7 | Notebook kernel standardization + cloud validation | done | `78908a4` |
 | 1.8 | Data-layer hardening + end-to-end build on hybrid-vertex | done | `330893c` |
+| 1.9 | GCP resource labels (`solution=geaptimes`) + README badges | in progress | — |
 
 ### 1.1 Repo scaffold + standards + tracker
 `git init`; `uv init --package` (name `geaptimes`, py3.11); `pyproject.toml` with ruff/pytest/ty
@@ -89,6 +90,13 @@ single-region datasets can't read it); output table names moved to config (`data
 /`data.prepped_table_name`); `gender`/`usertype` are STRING (`gender='male'`); exclude empty-string
 station name. **Result: 25 series, 18/25 with capacity** (7 absent from current snapshot →
 keep + null capacity, do not drop). All facts recorded in `docs/notes`.
+
+### 1.9 GCP resource labels + README badges
+Every label-capable GCP asset carries `solution=geaptimes` via `geaptimes.constants.RESOURCE_LABELS`
+(`bq_labels_option()` for DDL): applied in `gcp.ensure_dataset`/`ensure_bucket` and the table DDL;
+back-applied to the existing `hybrid-vertex` dataset/bucket/2 tables; rule documented in
+`CODE_STANDARDS.md`. README gets a centered badge banner (Python/uv/Ruff/ty/Pydantic/BigQuery/
+Vertex AI/TimesFM).
 
 ### Stage 1 verification
 - **No-cloud:** `uv sync` → `uv run ruff check .` → `uv run ruff format --check .` →

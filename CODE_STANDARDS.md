@@ -48,6 +48,15 @@ this document. (`CLAUDE.md` links here.)
   installs the package (`pip install -e .` from a clone, or from a release) and authenticates via
   `google.colab.auth.authenticate_user()`. Keep this opt-in so the local `uv` flow stays primary.
 
+## GCP resource labels
+
+- **Every label-capable GCP asset must carry the label `solution=geaptimes`.** This includes BQ
+  datasets and tables, GCS buckets, and (going forward) BQ query jobs, Vertex AI experiments,
+  pipelines, models, and endpoints.
+- Use the single source of truth: `geaptimes.constants.RESOURCE_LABELS` (and
+  `geaptimes.constants.bq_labels_option()` for BigQuery DDL). Do not hardcode the label inline.
+- New scripts/code that create GCP resources must apply these labels at creation time.
+
 ## Git / commits / PRs
 
 - **Never** add `Co-Authored-By` trailers to commits, and never add a "Generated with …" line

@@ -17,6 +17,7 @@ def test_source_query_core_elements() -> None:
     data = DataConfig()
     sql = build_source_query(data, "proj.ds.citibike_daily_source")
     assert "CREATE OR REPLACE TABLE `proj.ds.citibike_daily_source`" in sql
+    assert 'OPTIONS(labels=[("solution", "geaptimes")])' in sql  # required GCP label
     assert data.trips_table in sql
     assert "LIMIT 25" in sql
     assert "!= ''" in sql  # exclude the empty-string (missing) station name
@@ -60,3 +61,4 @@ def test_prepped_query_splits() -> None:
     assert "INTERVAL 28 DAY) THEN 'VALIDATE'" in sql
     assert "ELSE 'TRAIN'" in sql
     assert "AS splits" in sql
+    assert 'OPTIONS(labels=[("solution", "geaptimes")])' in sql  # required GCP label

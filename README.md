@@ -1,7 +1,19 @@
-# geapTimes
+<div align="center">
 
-A production-grade, **config-driven** time-series forecasting framework for **NYC Citibike**
-demand, built on the **Gemini Enterprise Agent Platform (Vertex AI)**.
+<h1 align="center">🚲 geapTimes ⌛</h1>
+
+> A production-grade, config-driven time-series forecasting framework for **NYC Citibike** demand on the **Gemini Enterprise Agent Platform** (*fka Vertex AI*).
+
+![Python](https://img.shields.io/badge/Python-3.11-3776AB?logo=python&logoColor=white)
+![uv](https://img.shields.io/badge/packaging-uv-DE5FE9?logo=uv&logoColor=white)
+![Ruff](https://img.shields.io/badge/lint-ruff-261230?logo=ruff&logoColor=white)
+![ty](https://img.shields.io/badge/types-ty-261230?logo=astral&logoColor=white)
+![Pydantic](https://img.shields.io/badge/Pydantic-v2-E92063?logo=pydantic&logoColor=white)
+![BigQuery](https://img.shields.io/badge/BigQuery-669DF6?logo=googlebigquery&logoColor=white)
+![Vertex AI](https://img.shields.io/badge/Vertex%20AI-1.158-4285F4?logo=googlecloud&logoColor=white)
+![TimesFM](https://img.shields.io/badge/TimesFM-2.5-FF6F00)
+
+</div>
 
 Forecasting logic is accessed through a **model factory** (AutoML, BQML `ARIMA_PLUS_XREG`, and
 TimesFM 2.5). Experiments are defined in **YAML** and validated into **Pydantic** config. Runs
