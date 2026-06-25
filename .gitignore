@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# uv / virtualenv
+.venv/
+# NOTE: uv.lock IS committed (geapTimes is an application — reproducible installs).
+
+# Environment / secrets
+.env
+.env.*
+*.key
+.secrets.baseline
+
+# Tooling caches
+.ruff_cache/
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.ty_cache/
+.ipynb_checkpoints/
+
+# OS / editor
+.DS_Store
+*.swp

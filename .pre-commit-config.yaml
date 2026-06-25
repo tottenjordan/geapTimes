@@ -1,0 +1,27 @@
+# Pre-commit hooks for geapTimes. Portable across `pre-commit` and `prek`.
+#
+# Activate (one-time, per clone):  uv run pre-commit install
+# Run on demand:                   uv run pre-commit run --all-files
+#
+# NOTE: defining hooks here does NOT install them — the git hook is only wired
+# up after `pre-commit install` is run. See docs/notes.
+
+repos:
+  # Ruff: lint + format (rev kept in sync with the pinned ruff in pyproject.toml)
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.20
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+
+  # Core file hygiene
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-added-large-files

@@ -1,0 +1,88 @@
+[project]
+name = "geaptimes"
+version = "0.1.0"
+description = "A production-grade, config-driven time-series forecasting framework for NYC Citibike demand on the Gemini Enterprise Agent Platform (Vertex AI)."
+readme = "README.md"
+authors = [
+    { name = "Jordan", email = "jordantotten@google.com" }
+]
+requires-python = ">=3.11"
+dependencies = [
+    "db-dtypes>=1.7.0",
+    "google-cloud-aiplatform==1.158.0",
+    "google-cloud-bigquery>=3.42.1",
+    "pandas>=3.0.3",
+    "pydantic>=2",
+    "pyyaml>=6.0.3",
+    "timesfm[torch]==2.0.1",
+]
+
+[build-system]
+requires = ["uv_build>=0.9.14,<0.10.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "ruff>=0.15.20",
+    "ty>=0.0.54",
+]
+nb = [
+    "ipykernel>=7.3.0",
+    "jupyter>=1.1.1",
+    "matplotlib>=3.11.0",
+]
+test = [
+    "pytest>=9.1.1",
+    "pytest-cov>=7.1.0",
+]
+
+[tool.uv]
+default-groups = ["dev", "test"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src"]
+extend-exclude = ["data_notebooks"]
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = [
+    "D",        # pydocstyle (enable selectively)
+    "COM812",   # trailing comma (conflicts with formatter)
+    "ISC001",   # implicit string concat (conflicts with formatter)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = [
+    "S101",     # assert allowed in tests
+    "PLR2004",  # magic values allowed in tests
+    "ANN",      # annotations optional in tests
+]
+"scripts/**/*.py" = [
+    "T201",     # print allowed in CLI scripts
+]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+docstring-code-format = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = [
+    "--cov=geaptimes",
+    "--cov-report=term-missing",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["src/geaptimes"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+]
