@@ -4,7 +4,8 @@
 
 project:
   id: ${GCP_PROJECT} # required; provided via environment
-  region: us-central1
+  region: us-central1 # Vertex / GCS region
+  bq_location: US # BigQuery dataset location; must colocate with bigquery-public-data (US)
   gcs_bucket: geaptimes-${GCP_PROJECT}
   bq_dataset: geaptimes
 
@@ -17,6 +18,10 @@ data:
   series_column: start_station_name
   time_column: date
   target_column: num_trips
+
+  # Output tables built into project.bq_dataset by geaptimes.data.queries.
+  source_table_name: citibike_daily_source
+  prepped_table_name: citibike_daily_prepped
 
   station_filter:
     top_n: 25 # top stations by total trips

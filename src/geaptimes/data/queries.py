@@ -12,9 +12,6 @@ SQL is assembled from trusted :class:`~geaptimes.schemas.DataConfig` values (not
 
 from geaptimes.schemas import DataConfig, ProjectConfig
 
-SOURCE_TABLE_NAME = "citibike_daily_source"
-PREPPED_TABLE_NAME = "citibike_daily_prepped"
-
 # GSOD missing-value sentinels.
 _TEMP_MISSING = "9999.9"
 _PRCP_MISSING = "99.99"
@@ -80,7 +77,7 @@ series_tbl AS (
 WITH top_stations AS (
     SELECT {series}
     FROM `{data.trips_table}`
-    WHERE {series} IS NOT NULL
+    WHERE {series} IS NOT NULL AND {series} != ''
     GROUP BY {series}
     ORDER BY COUNT(*) DESC
     LIMIT {data.station_filter.top_n}
@@ -92,12 +89,23 @@ daily AS (
         COUNT(*) AS {target},
         AVG(tripduration) AS avg_tripduration,
         AVG(IF(usertype = 'Subscriber', 1.0, 0.0)) AS pct_subscriber,
-        SAFE_DIVIDE(COUNTIF(gender = 1), NULLIF(COUNTIF(gender IN (1, 2)), 0)) AS ratio_gender
+        SAFE_DIVIDE(COUNTIF(gender = 'male'), NULLIF(COUNTIF(gender IN ('male', 'female')), 0)) AS ratio_gender
     FROM `{data.trips_table}`
     WHERE {series} IN (SELECT {series} FROM top_stations){date_filter}
     GROUP BY {series}, {time}
 ),
 {series_cte},
+station_ids AS (
+    SELECT {series}, start_station_id
+    FROM (
+        SELECT {series}, start_station_id,
+               ROW_NUMBER() OVER (PARTITION BY {series} ORDER BY COUNT(*) DESC) AS rn
+        FROM `{data.trips_table}`
+        WHERE {series} IN (SELECT {series} FROM top_stations)
+        GROUP BY {series}, start_station_id
+    )
+    WHERE rn = 1
+),
 weather AS (
     SELECT
         PARSE_DATE('%Y%m%d', CONCAT(year, mo, da)) AS {time},
@@ -109,7 +117,7 @@ weather AS (
         AND wban = '{data.weather.station_wban}'
 ),
 meta AS (
-    SELECT name AS {series}, capacity, region_id, latitude, longitude
+    SELECT station_id, capacity, region_id, latitude, longitude
     FROM `{data.stations_table}`
 )
 SELECT
@@ -119,10 +127,12 @@ SELECT
     EXTRACT(DAYOFWEEK FROM t.{time}) AS day_of_week,
     EXTRACT(MONTH FROM t.{time}) AS month,
     IF(EXTRACT(DAYOFWEEK FROM t.{time}) IN (1, 7), 1, 0) AS is_weekend,
+    sid.start_station_id AS station_id,
     m.capacity, m.region_id, m.latitude, m.longitude
 FROM series_tbl t
 LEFT JOIN weather w USING ({time})
-LEFT JOIN meta m USING ({series})
+LEFT JOIN station_ids sid USING ({series})
+LEFT JOIN meta m ON CAST(m.station_id AS STRING) = CAST(sid.start_station_id AS STRING)
 """
 
 

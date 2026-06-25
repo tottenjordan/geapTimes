@@ -18,11 +18,13 @@ def ensure_dataset(project: ProjectConfig, *, dry_run: bool) -> None:
     """Create the BigQuery dataset if it does not already exist."""
     dataset_id = f"{project.id}.{project.bq_dataset}"
     if dry_run:
-        logger.info("[dry-run] would ensure BigQuery dataset %s (%s)", dataset_id, project.region)
+        logger.info(
+            "[dry-run] would ensure BigQuery dataset %s (%s)", dataset_id, project.bq_location
+        )
         return
     client = bigquery.Client(project=project.id)
     dataset = bigquery.Dataset(dataset_id)
-    dataset.location = project.region
+    dataset.location = project.bq_location
     client.create_dataset(dataset, exists_ok=True)
     logger.info("Ensured BigQuery dataset %s", dataset_id)
 

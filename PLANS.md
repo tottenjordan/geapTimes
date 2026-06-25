@@ -40,6 +40,7 @@ container (Model Garden → endpoint); side-by-side comparison DAG.
 | 1.5 | `data_notebooks/01_citibike_prep.ipynb` | done | `bc43525` |
 | 1.6 | `scripts/setup_gcp.py` (+ `geaptimes.gcp`) | done | `416b4b2` |
 | 1.7 | Notebook kernel standardization + cloud validation | done | `78908a4` |
+| 1.8 | Data-layer hardening + end-to-end build on hybrid-vertex | in progress | — |
 
 ### 1.1 Repo scaffold + standards + tracker
 `git init`; `uv init --package` (name `geaptimes`, py3.11); `pyproject.toml` with ruff/pytest/ty
@@ -80,6 +81,14 @@ Standardized `geaptimes` ipykernel (registered via `ipykernel install`; notebook
 updated (incl. opt-in Colab path). Read-only cloud validation against `hybrid-vertex` recorded in
 `docs/notes` (frozen window 2013-07-01→2018-05-31; GSOD LaGuardia confirmed; 6/25 stations
 unmatched on name-join — refinement to join metadata on `station_id` flagged).
+
+### 1.8 Data-layer hardening + end-to-end build (hybrid-vertex)
+Built `_source`/`_prepped` in `hybrid-vertex` (~4.4 GB billed). Fixes from the live build:
+metadata join on `station_id` (CAST to STRING); `bq_location: US` (public data is US-multiregion —
+single-region datasets can't read it); output table names moved to config (`data.source_table_name`
+/`data.prepped_table_name`); `gender`/`usertype` are STRING (`gender='male'`); exclude empty-string
+station name. **Result: 25 series, 18/25 with capacity** (7 absent from current snapshot →
+keep + null capacity, do not drop). All facts recorded in `docs/notes`.
 
 ### Stage 1 verification
 - **No-cloud:** `uv sync` → `uv run ruff check .` → `uv run ruff format --check .` →

@@ -53,19 +53,38 @@ when wiring defaults — the docs page pulled didn't enumerate the codes.)
   multiple-of-32 context rule was a 2.0 patch-size constraint — re-verify for 2.5 before relying
   on it; we keep `context_len` a multiple of 32 (default 512) to be safe.
 
-## Data caveats (verified 2026-06-25 against project `hybrid-vertex`)
+## Data caveats (verified 2026-06-25, end-to-end build in project `hybrid-vertex`)
 
-- `bigquery-public-data.new_york_citibike.citibike_trips` is **frozen**: date span
-  **2013-07-01 → 2018-05-31**, ~58.9M trips. The 2018-05-31 max date dictates split boundaries
-  (TEST = last 14 days, etc.).
-- `bigquery-public-data.noaa_gsod` LaGuardia station (`stn=725030`, `wban=14732`) has full daily
-  coverage over the window (2,556 days across 2013–2019) — station ids confirmed correct.
-- `bigquery-public-data.new_york.citibike_stations` is a **current snapshot**, joined by
-  station *name*. **6 of the top-25** station names do **not** match → those rows get null
-  `capacity`/`region_id`/lat/long. Treat capacity as an approximation.
-  - **Possible refinement:** carry `start_station_id` through the source query and join metadata
-    on `station_id` (more stable than names) to reduce the unmatched count, while keeping
-    `start_station_name` as the series key. Not yet applied — flagged at the Stage 1 checkpoint.
+- `bigquery-public-data.new_york_citibike.citibike_trips` is **frozen**: span
+  **2013-07-01 → 2018-05-31**, ~58.9M trips. The 2018-05-31 max date dictates split boundaries.
+- `bigquery-public-data.noaa_gsod` LaGuardia (`stn=725030`, `wban=14732`): full daily coverage
+  (2,556 days, 2013–2019). In the built table, `temp` is 100% non-null, `prcp` 99.9%.
+- **Capacity / station metadata gap is real and not fixable by join key.** The prepped table has
+  **25 series, 18 with `capacity`** — 7 top stations (e.g. Pershing Square North, 8 Ave & W 31 St)
+  are **absent from the current `citibike_stations` snapshot entirely** (closed/renamed since 2018).
+  Switching the join from `name` to `station_id` did **not** recover them (they're gone from the
+  snapshot). Decision: **keep all 25, accept null `capacity` for the 7** (they are high-volume
+  series; capacity is a single static attribute that TimesFM ignores, AutoML tolerates, and BQML
+  XREG doesn't use). Impute later only if a model requires non-null.
+- **Staggered lifecycles:** the global-max-date split means stations that closed before 2018-05-31
+  have no TEST/VALIDATE rows (built table: 25 TRAIN, ~23 VALIDATE, ~21 TEST series). Expected.
+
+## BigQuery schema facts (verified via `get_table`)
+
+- `citibike_trips`: `gender` is **STRING** (`'male'`/`'female'`/`'unknown'`/`''`) — **not** numeric
+  codes; `usertype` STRING (`'Subscriber'`/`'Customer'`/`''`); `start_station_id` **INTEGER**;
+  `starttime` **DATETIME**. The empty string `''` is the **#1** `start_station_name` (~5.8M
+  missing-name trips) — excluded in `top_stations` via `!= ''`.
+- `new_york.citibike_stations`: `station_id` is **STRING**, `capacity`/`region_id` INTEGER. Since
+  trips `start_station_id` is INTEGER, the metadata join casts both sides to STRING.
+
+## BigQuery location gotcha (cost us a failed build)
+
+- `bigquery-public-data` lives in the **US multi-region**. A `CREATE TABLE` job whose destination
+  dataset is a single region (e.g. `us-central1`) **cannot read** the US-multiregion public tables
+  → 403 "does not exist". Fix: the geapTimes dataset location is **`US`** (`project.bq_location`),
+  separate from the Vertex/GCS `region` (`us-central1`). Read-only queries with no destination
+  auto-run in US, which is why ad-hoc validation worked but the build did not.
 
 ## Tooling gotcha
 

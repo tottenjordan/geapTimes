@@ -1,8 +1,6 @@
 """String-level tests for the SQL builders (no BigQuery calls)."""
 
 from geaptimes.data.queries import (
-    PREPPED_TABLE_NAME,
-    SOURCE_TABLE_NAME,
     build_prepped_query,
     build_source_query,
     table_id,
@@ -12,7 +10,7 @@ from geaptimes.schemas import DataConfig, ProjectConfig
 
 def test_table_id() -> None:
     proj = ProjectConfig(id="proj", gcs_bucket="bkt", bq_dataset="ds")
-    assert table_id(proj, SOURCE_TABLE_NAME) == "proj.ds.citibike_daily_source"
+    assert table_id(proj, DataConfig().source_table_name) == "proj.ds.citibike_daily_source"
 
 
 def test_source_query_core_elements() -> None:
@@ -21,7 +19,10 @@ def test_source_query_core_elements() -> None:
     assert "CREATE OR REPLACE TABLE `proj.ds.citibike_daily_source`" in sql
     assert data.trips_table in sql
     assert "LIMIT 25" in sql
+    assert "!= ''" in sql  # exclude the empty-string (missing) station name
     assert "COUNT(*) AS num_trips" in sql
+    # gender/usertype are STRING in this table (not numeric codes)
+    assert "gender = 'male'" in sql
     # weather join + sentinels + station selection
     assert ".gsod*`" in sql
     assert "NULLIF(temp, 9999.9)" in sql
@@ -30,6 +31,9 @@ def test_source_query_core_elements() -> None:
     assert "AS day_of_week" in sql
     assert "AS is_weekend" in sql
     assert "capacity, region_id, latitude, longitude" in sql
+    # metadata joins on station_id (more stable than name)
+    assert "station_ids AS" in sql
+    assert "CAST(m.station_id AS STRING)" in sql
 
 
 def test_source_query_gap_fill_toggle() -> None:
@@ -51,7 +55,7 @@ def test_source_query_date_filter() -> None:
 
 def test_prepped_query_splits() -> None:
     data = DataConfig()  # test_length=14, validate_length=14
-    sql = build_prepped_query(data, "p.d.citibike_daily_source", f"p.d.{PREPPED_TABLE_NAME}")
+    sql = build_prepped_query(data, "p.d.citibike_daily_source", f"p.d.{data.prepped_table_name}")
     assert "INTERVAL 14 DAY) THEN 'TEST'" in sql
     assert "INTERVAL 28 DAY) THEN 'VALIDATE'" in sql
     assert "ELSE 'TRAIN'" in sql

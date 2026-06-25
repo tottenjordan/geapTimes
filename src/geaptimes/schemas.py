@@ -25,10 +25,16 @@ class _Base(BaseModel):
 
 
 class ProjectConfig(_Base):
-    """GCP project / storage targets."""
+    """GCP project / storage targets.
+
+    ``region`` is the Vertex/GCS region; ``bq_location`` is the BigQuery dataset location, which
+    must colocate with the source data. The ``bigquery-public-data`` Citibike/GSOD tables live in
+    the ``US`` multi-region, so derived datasets default to ``US`` (not a single region).
+    """
 
     id: str
     region: str = "us-central1"
+    bq_location: str = "US"
     gcs_bucket: str
     bq_dataset: str = "geaptimes"
 
@@ -86,6 +92,9 @@ class DataConfig(_Base):
     series_column: str = "start_station_name"
     time_column: str = "date"
     target_column: str = "num_trips"
+    # Output tables built by geaptimes.data.queries (within project.bq_dataset).
+    source_table_name: str = "citibike_daily_source"
+    prepped_table_name: str = "citibike_daily_prepped"
     station_filter: StationFilter = Field(default_factory=StationFilter)
     date_range: DateRange = Field(default_factory=DateRange)
     gap_fill: bool = True
