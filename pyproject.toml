@@ -58,6 +58,7 @@ ignore = [
     "S101",     # assert allowed in tests
     "PLR2004",  # magic values allowed in tests
     "ANN",      # annotations optional in tests
+    "INP001",   # tests dir is not a package
 ]
 "scripts/**/*.py" = [
     "T201",     # print allowed in CLI scripts

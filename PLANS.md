@@ -33,8 +33,8 @@ container (Model Garden → endpoint); side-by-side comparison DAG.
 
 | # | Item | Status | Commit |
 |---|------|--------|--------|
-| 1.1 | Repo scaffold + standards + tracker | in progress | — |
-| 1.2 | `config/schemas.py` — Pydantic v2 typed config | pending | — |
+| 1.1 | Repo scaffold + standards + tracker | done | `1b9dc1d` |
+| 1.2 | `src/geaptimes/schemas.py` — Pydantic v2 typed config | done | `pending` |
 | 1.3 | `config/base_config.yaml` — DOE config | pending | — |
 | 1.4 | `src/geaptimes/data/queries.py` + `utils/logger.py` | pending | — |
 | 1.5 | `data_notebooks/01_citibike_prep.ipynb` | pending | — |
@@ -47,10 +47,13 @@ db-dtypes, pandas, pydantic>=2, pyyaml, `timesfm[torch]==2.0.1`); `.pre-commit-c
 `CODE_STANDARDS.md`, `CLAUDE.md` (links to standards), `README.md`, `.gitignore` (commit
 `uv.lock`), generated `requirements.txt`, `docs/notes/`; this `PLANS.md`.
 
-### 1.2 `config/schemas.py` (Pydantic v2)
+### 1.2 `src/geaptimes/schemas.py` (Pydantic v2)
 Typed models for project/data/forecast/execution + per-model params as a **discriminated union**
 on `params.type` (TimesFM/BQML/AutoML). Validators (`context_len` multiple of 32, `horizon>0`,
 `top_n>0`); `ExperimentConfig.from_yaml` with `${ENV}` substitution. Tests in `tests/`.
+**Deviation:** schemas live in the package (`src/geaptimes/schemas.py`, importable as
+`geaptimes.schemas`) instead of the blueprint's non-importable `config/schemas.py`; the YAML
+data stays in `config/`.
 
 ### 1.3 `config/base_config.yaml`
 Agreed DOE config: data filters/splits/weather/covariate roles/holiday_region; forecast
