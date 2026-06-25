@@ -12,7 +12,7 @@ Status legend: `pending` · `in progress` · `done` · `blocked`
 
 | Stage | Title | Status |
 |-------|-------|--------|
-| 1 | Data Architecture & Config Schema | in progress |
+| 1 | Data Architecture & Config Schema | items done — STOP (awaiting approval) |
 | 2 | Model Factory & Forecaster Abstractions | pending |
 | 3 | Experiment Tracking & DOE Framework | pending |
 | 4 | Managed Pipelines & Cloud Orchestration | pending |
@@ -37,7 +37,7 @@ container (Model Garden → endpoint); side-by-side comparison DAG.
 | 1.2 | `src/geaptimes/schemas.py` — Pydantic v2 typed config | done | `c9d201a` |
 | 1.3 | `config/base_config.yaml` — DOE config | done | `ac039fe` |
 | 1.4 | `src/geaptimes/data/queries.py` + `utils/logger.py` | done | `a25a81d` |
-| 1.5 | `data_notebooks/01_citibike_prep.ipynb` | pending | — |
+| 1.5 | `data_notebooks/01_citibike_prep.ipynb` | done | `bc43525` |
 | 1.6 | `scripts/setup_gcp.py` (+ `geaptimes.gcp`) | done | `416b4b2` |
 
 ### 1.1 Repo scaffold + standards + tracker
