@@ -92,9 +92,12 @@ class DataConfig(_Base):
     series_column: str = "start_station_name"
     time_column: str = "date"
     target_column: str = "num_trips"
-    # Output tables built by geaptimes.data.queries (within project.bq_dataset).
+    # Output table base names (within project.bq_dataset). geaptimes.naming appends a slug:
+    # the shared `source` gets the data slug; prepped/train/infer get the full config slug.
     source_table_name: str = "citibike_daily_source"
     prepped_table_name: str = "citibike_daily_prepped"
+    train_table_name: str = "citibike_daily_train"
+    infer_table_name: str = "citibike_daily_infer"
     station_filter: StationFilter = Field(default_factory=StationFilter)
     date_range: DateRange = Field(default_factory=DateRange)
     gap_fill: bool = True

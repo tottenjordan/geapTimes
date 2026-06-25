@@ -42,6 +42,7 @@ container (Model Garden → endpoint); side-by-side comparison DAG.
 | 1.7 | Notebook kernel standardization + cloud validation | done | `78908a4` |
 | 1.8 | Data-layer hardening + end-to-end build on hybrid-vertex | done | `330893c` |
 | 1.9 | GCP resource labels (`solution=geaptimes`) + README badges | done | `8b4d4e8` |
+| 1.10 | Table naming convention (`geaptimes.naming`) | in progress | — |
 
 ### 1.1 Repo scaffold + standards + tracker
 `git init`; `uv init --package` (name `geaptimes`, py3.11); `pyproject.toml` with ruff/pytest/ty
@@ -97,6 +98,14 @@ Every label-capable GCP asset carries `solution=geaptimes` via `geaptimes.consta
 back-applied to the existing `hybrid-vertex` dataset/bucket/2 tables; rule documented in
 `CODE_STANDARDS.md`. README gets a centered badge banner (Python/uv/Ruff/ty/Pydantic/BigQuery/
 Vertex AI/TimesFM).
+
+### 1.10 Table naming convention (`geaptimes.naming`)
+Human-readable token slugs: shared `source` → `__top{N}`; `prepped`/`train`/`infer` →
+`__top{N}_h{horizon}_t{test}_v{validate}`. `table_names(cfg)` is the single source of truth;
+`config_fingerprint(cfg)` is stamped into each table's description for traceability (tokens don't
+capture covariate/weather/holiday changes — disambiguate via `experiment_name`). Notebook uses it;
+live `hybrid-vertex` tables renamed to the slugged names + descriptions stamped. Documented in
+`CODE_STANDARDS.md`. (train/infer builders land in Stage 2.)
 
 ### Stage 1 verification
 - **No-cloud:** `uv sync` → `uv run ruff check .` → `uv run ruff format --check .` →

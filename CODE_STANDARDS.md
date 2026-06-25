@@ -36,6 +36,15 @@ this document. (`CLAUDE.md` links here.)
 - The GCP project is supplied via the `GCP_PROJECT` env var (default `hybrid-vertex`); see
   `.env.example`. Do not hardcode project ids in committed config.
 
+### Table naming
+
+- Derive all output table names from `geaptimes.naming` (never hardcode). Convention
+  (human-readable tokens): the shared `source` table uses the data slug (`__top25`);
+  `prepped`/`train`/`infer` use the full config slug (`__top25_h14_t14_v14`).
+- Token slugs do not encode covariate/weather/holiday changes — disambiguate experiments via a
+  distinct `execution.experiment_name`. Each built table's **description** carries the full config
+  fingerprint (`geaptimes.naming.config_fingerprint`) for traceability.
+
 ## Notebooks
 
 - Use the standardized **`geaptimes`** Jupyter kernel (backed by the `uv` venv) so every user
