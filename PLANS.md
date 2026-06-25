@@ -38,7 +38,7 @@ container (Model Garden → endpoint); side-by-side comparison DAG.
 | 1.3 | `config/base_config.yaml` — DOE config | done | `ac039fe` |
 | 1.4 | `src/geaptimes/data/queries.py` + `utils/logger.py` | done | `a25a81d` |
 | 1.5 | `data_notebooks/01_citibike_prep.ipynb` | pending | — |
-| 1.6 | `scripts/setup_gcp.py` | pending | — |
+| 1.6 | `scripts/setup_gcp.py` (+ `geaptimes.gcp`) | done | `416b4b2` |
 
 ### 1.1 Repo scaffold + standards + tracker
 `git init`; `uv init --package` (name `geaptimes`, py3.11); `pyproject.toml` with ruff/pytest/ty
