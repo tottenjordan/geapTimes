@@ -177,22 +177,30 @@ class ExperimentConfig(_Base):
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> "ExperimentConfig":
-        """Load YAML, substitute ``${ENV}`` references, and validate."""
+        """Load YAML, substitute ``${ENV}`` references in values, and validate."""
         raw = Path(path).read_text(encoding="utf-8")
-        expanded = _expand_env(raw)
-        data = yaml.safe_load(expanded)
-        return cls.model_validate(data)
+        data = yaml.safe_load(raw)
+        return cls.model_validate(_expand_env(data))
 
 
-def _expand_env(text: str) -> str:
-    """Replace ``${VAR}`` with the environment value, raising if any are unset."""
+def _expand_env(obj: object) -> object:
+    """Recursively replace ``${VAR}`` in string *values*, raising if any are unset.
 
-    def _sub(match: re.Match[str]) -> str:
-        name = match.group(1)
-        value = os.environ.get(name)
-        if value is None:
-            msg = f"Environment variable '{name}' referenced in config is not set"
-            raise ValueError(msg)
-        return value
+    Operates on the parsed structure (not raw text) so YAML comments are never touched.
+    """
+    if isinstance(obj, dict):
+        return {key: _expand_env(value) for key, value in obj.items()}
+    if isinstance(obj, list):
+        return [_expand_env(item) for item in obj]
+    if isinstance(obj, str):
+        return _ENV_PATTERN.sub(_sub_env, obj)
+    return obj
 
-    return _ENV_PATTERN.sub(_sub, text)
+
+def _sub_env(match: re.Match[str]) -> str:
+    name = match.group(1)
+    value = os.environ.get(name)
+    if value is None:
+        msg = f"Environment variable '{name}' referenced in config is not set"
+        raise ValueError(msg)
+    return value

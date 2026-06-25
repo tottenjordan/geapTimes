@@ -1,0 +1,78 @@
+# geapTimes — base experiment configuration (Design of Experiments).
+# Validated into geaptimes.schemas.ExperimentConfig. ${ENV} refs are substituted at load time.
+# Edit values here; the schema enforces structure and types.
+
+project:
+  id: ${GCP_PROJECT} # required; provided via environment
+  region: us-central1
+  gcs_bucket: geaptimes-${GCP_PROJECT}
+  bq_dataset: geaptimes
+
+data:
+  # Source public datasets (Citibike is frozen ~2018; verify max date in the prep notebook).
+  trips_table: bigquery-public-data.new_york_citibike.citibike_trips
+  stations_table: bigquery-public-data.new_york.citibike_stations
+  weather_dataset: bigquery-public-data.noaa_gsod
+
+  series_column: start_station_name
+  time_column: date
+  target_column: num_trips
+
+  station_filter:
+    top_n: 25 # top stations by total trips
+
+  date_range: # null -> dataset min/max
+    start: null
+    end: null
+
+  gap_fill: true # zero-fill no-trip days within each station's active window
+
+  weather: # single NYC GSOD station (LaGuardia); verify ids in the prep notebook
+    station_usaf: "725030"
+    station_wban: "14732"
+
+  splits: # statmike-style date-range splits off the global max date
+    granularity: DAY
+    test_length: 14
+    validate_length: 14
+
+  # Covariate roles use the official AutoML feature-type names.
+  covariates:
+    time_series_attribute_columns: [capacity, region_id, latitude, longitude]
+    available_at_forecast_columns: [temp, prcp, day_of_week, month, is_weekend]
+    unavailable_at_forecast_columns: [avg_tripduration, pct_subscriber, ratio_gender]
+
+  holiday_region: US # built-in holiday modeling (AutoML/BQML); null disables
+
+forecast:
+  frequency: D # mapped per-model (AutoML day/1, TimesFM freq=0)
+  horizon: 14
+
+models:
+  - name: timesfm
+    enabled: true
+    params:
+      type: timesfm
+      checkpoint: google/timesfm-2.5-200m-pytorch
+      max_context: 1024
+      context_len: 512 # multiple of 32
+      use_covariates: false # univariate v1; XReg opt-in later
+      quantiles: true
+
+  - name: bqml_arima_xreg
+    enabled: true
+    params:
+      type: bqml
+      model_type: ARIMA_PLUS_XREG
+      use_covariates: true # available-at-forecast subset only
+
+  - name: automl
+    enabled: false # expensive; opt-in
+    params:
+      type: automl
+      optimization_objective: minimize-rmse
+      context_window: 28 # AutoML look-back (distinct from TimesFM context_len)
+
+execution:
+  target: local_cpu # local_cpu | local_gpu | cloud_pipeline
+  experiment_name: citibike-daily-baseline
