@@ -1,8 +1,10 @@
 """String-level tests for the SQL builders (no BigQuery calls)."""
 
 from geaptimes.data.queries import (
+    build_infer_query,
     build_prepped_query,
     build_source_query,
+    build_train_query,
     table_id,
 )
 from geaptimes.schemas import DataConfig, ProjectConfig
@@ -62,3 +64,21 @@ def test_prepped_query_splits() -> None:
     assert "ELSE 'TRAIN'" in sql
     assert "AS splits" in sql
     assert 'OPTIONS(labels=[("solution", "geaptimes")])' in sql  # required GCP label
+
+
+def test_train_query_excludes_test() -> None:
+    sql = build_train_query(DataConfig(), "p.d.prepped", "p.d.train")
+    assert "CREATE OR REPLACE TABLE `p.d.train`" in sql
+    assert 'OPTIONS(labels=[("solution", "geaptimes")])' in sql
+    assert "FROM `p.d.prepped`" in sql
+    assert "WHERE splits != 'TEST'" in sql
+
+
+def test_infer_query_is_test_window_with_null_target() -> None:
+    data = DataConfig()  # target_column = num_trips
+    sql = build_infer_query(data, "p.d.prepped", "p.d.infer")
+    assert "CREATE OR REPLACE TABLE `p.d.infer`" in sql
+    assert 'OPTIONS(labels=[("solution", "geaptimes")])' in sql
+    assert "WHERE splits = 'TEST'" in sql
+    # target is nulled so the row schema matches a real inference request
+    assert "REPLACE (CAST(NULL AS INT64) AS num_trips)" in sql

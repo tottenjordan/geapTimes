@@ -153,3 +153,36 @@ SELECT *,
     END AS splits
 FROM `{source}`
 """
+
+
+def build_train_query(data: DataConfig, prepped: str, destination: str) -> str:
+    """Build the training table: all non-TEST rows (TRAIN + VALIDATE) from the prepped table.
+
+    This is the fitting window backends train on; forecasting ``horizon`` steps past its last
+    date lands on the held-out TEST window (see :func:`build_infer_query`).
+    """
+    _ = data  # signature parity with the other builders; no field needed today.
+    return f"""CREATE OR REPLACE TABLE `{destination}`
+{bq_labels_option()} AS
+SELECT * FROM `{prepped}`
+WHERE splits != 'TEST'
+"""
+
+
+def build_infer_query(data: DataConfig, prepped: str, destination: str) -> str:
+    """Build the inference table: the TEST window with the target nulled out.
+
+    For this frozen public dataset the held-out forecast horizon *is* the TEST split (the most
+    recent ``splits.test_length`` days), so the known-future regressors (temp/prcp/calendar) are
+    genuinely available here — unlike true production dates past the table's max, which have no
+    weather actuals (deferred to Stage 4). The target is set NULL so the row schema matches a
+    real inference request: it is what BQML ``ML.FORECAST`` (XREG future regressors) and AutoML
+    batch prediction consume.
+    """
+    target = data.target_column
+    return f"""CREATE OR REPLACE TABLE `{destination}`
+{bq_labels_option()} AS
+SELECT * REPLACE (CAST(NULL AS INT64) AS {target})
+FROM `{prepped}`
+WHERE splits = 'TEST'
+"""
