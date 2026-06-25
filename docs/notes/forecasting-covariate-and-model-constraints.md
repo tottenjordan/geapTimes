@@ -53,13 +53,19 @@ when wiring defaults — the docs page pulled didn't enumerate the codes.)
   multiple-of-32 context rule was a 2.0 patch-size constraint — re-verify for 2.5 before relying
   on it; we keep `context_len` a multiple of 32 (default 512) to be safe.
 
-## Data caveats
+## Data caveats (verified 2026-06-25 against project `hybrid-vertex`)
 
-- The BQ public table `bigquery-public-data.new_york_citibike.citibike_trips` is **frozen**
-  (~2018). Verify the exact max date in the prep notebook; it dictates split dates.
-- `bigquery-public-data.new_york.citibike_stations` is a **current snapshot** — its `capacity`
-  is today's value, joined by station name to 2018 trips, so a few names may not match. Report
-  unmatched stations in the notebook; treat as an approximation.
+- `bigquery-public-data.new_york_citibike.citibike_trips` is **frozen**: date span
+  **2013-07-01 → 2018-05-31**, ~58.9M trips. The 2018-05-31 max date dictates split boundaries
+  (TEST = last 14 days, etc.).
+- `bigquery-public-data.noaa_gsod` LaGuardia station (`stn=725030`, `wban=14732`) has full daily
+  coverage over the window (2,556 days across 2013–2019) — station ids confirmed correct.
+- `bigquery-public-data.new_york.citibike_stations` is a **current snapshot**, joined by
+  station *name*. **6 of the top-25** station names do **not** match → those rows get null
+  `capacity`/`region_id`/lat/long. Treat capacity as an approximation.
+  - **Possible refinement:** carry `start_station_id` through the source query and join metadata
+    on `station_id` (more stable than names) to reduce the unmatched count, while keeping
+    `start_station_name` as the series key. Not yet applied — flagged at the Stage 1 checkpoint.
 
 ## Tooling gotcha
 

@@ -35,6 +35,30 @@ uv run pytest                 # tests
 
 See [CODE_STANDARDS.md](./CODE_STANDARDS.md) for the full development workflow.
 
+## Notebooks (standardized kernel)
+
+Notebooks run on a shared, reproducible Jupyter kernel backed by the project's `uv` venv:
+
+```bash
+# one-time per machine: register the kernel
+uv run python -m ipykernel install --user --name geaptimes --display-name "geapTimes (uv 3.11)"
+uv run jupyter lab            # notebooks auto-select the "geaptimes" kernel
+```
+
+The notebooks reference this kernel by name (`geaptimes`), so everyone runs the same env.
+
+## GCP setup
+
+```bash
+cp .env.example .env          # defaults GCP_PROJECT=hybrid-vertex
+set -a; source .env; set +a
+gcloud auth application-default login
+uv run python scripts/setup_gcp.py --config config/base_config.yaml --dry-run
+```
+
+> Want zero-setup sharing instead? The notebooks can be made Colab-friendly by adding a guarded
+> first cell that `pip install`s the package and runs `google.colab.auth` — see CODE_STANDARDS.
+
 ## Layout
 
 ```

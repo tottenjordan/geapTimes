@@ -39,6 +39,7 @@ container (Model Garden → endpoint); side-by-side comparison DAG.
 | 1.4 | `src/geaptimes/data/queries.py` + `utils/logger.py` | done | `a25a81d` |
 | 1.5 | `data_notebooks/01_citibike_prep.ipynb` | done | `bc43525` |
 | 1.6 | `scripts/setup_gcp.py` (+ `geaptimes.gcp`) | done | `416b4b2` |
+| 1.7 | Notebook kernel standardization + cloud validation | in progress | — |
 
 ### 1.1 Repo scaffold + standards + tracker
 `git init`; `uv init --package` (name `geaptimes`, py3.11); `pyproject.toml` with ruff/pytest/ty
@@ -72,6 +73,13 @@ LaGuardia GSOD ids, `citibike_stations` name-join coverage; visualizes ranges + 
 ### 1.6 `scripts/setup_gcp.py`
 Idempotent GCS bucket + BQ dataset provisioning from `ProjectConfig`; `--config` / `--dry-run`
 flags; no-op if resources exist.
+
+### 1.7 Notebook kernel standardization + cloud validation
+Standardized `geaptimes` ipykernel (registered via `ipykernel install`; notebook pins
+`kernelspec.name=geaptimes`); `.env.example` with `GCP_PROJECT=hybrid-vertex`; README + standards
+updated (incl. opt-in Colab path). Read-only cloud validation against `hybrid-vertex` recorded in
+`docs/notes` (frozen window 2013-07-01→2018-05-31; GSOD LaGuardia confirmed; 6/25 stations
+unmatched on name-join — refinement to join metadata on `station_id` flagged).
 
 ### Stage 1 verification
 - **No-cloud:** `uv sync` → `uv run ruff check .` → `uv run ruff format --check .` →

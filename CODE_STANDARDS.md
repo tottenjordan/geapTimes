@@ -30,8 +30,23 @@ this document. (`CLAUDE.md` links here.)
 
 ## Configuration
 
-- Experiments are defined in **YAML** and parsed into **Pydantic v2** models (`config/schemas.py`)
-  for type safety. Code consumes the validated `ExperimentConfig`, never raw YAML.
+- Experiments are defined in **YAML** and parsed into **Pydantic v2** models
+  (`src/geaptimes/schemas.py`) for type safety. Code consumes the validated `ExperimentConfig`,
+  never raw YAML.
+- The GCP project is supplied via the `GCP_PROJECT` env var (default `hybrid-vertex`); see
+  `.env.example`. Do not hardcode project ids in committed config.
+
+## Notebooks
+
+- Use the standardized **`geaptimes`** Jupyter kernel (backed by the `uv` venv) so every user
+  runs the same environment. Register once per machine:
+  `uv run python -m ipykernel install --user --name geaptimes --display-name "geapTimes (uv 3.11)"`.
+- Notebooks pin `metadata.kernelspec.name = "geaptimes"`.
+- Notebooks are excluded from `ruff` (`extend-exclude`); keep heavy logic in the package and
+  import it, so it is linted/typed/tested.
+- **Colab option (not default):** to run a notebook in Colab, add a guarded first cell that
+  installs the package (`pip install -e .` from a clone, or from a release) and authenticates via
+  `google.colab.auth.authenticate_user()`. Keep this opt-in so the local `uv` flow stays primary.
 
 ## Git / commits / PRs
 
