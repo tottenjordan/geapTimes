@@ -62,6 +62,7 @@ ignore = [
 ]
 "scripts/**/*.py" = [
     "T201",     # print allowed in CLI scripts
+    "INP001",   # scripts dir is not a package
 ]
 "src/geaptimes/data/queries.py" = [
     "S608",     # SQL built from trusted config (not user input) by design

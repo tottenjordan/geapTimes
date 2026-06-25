@@ -36,7 +36,7 @@ container (Model Garden → endpoint); side-by-side comparison DAG.
 | 1.1 | Repo scaffold + standards + tracker | done | `1b9dc1d` |
 | 1.2 | `src/geaptimes/schemas.py` — Pydantic v2 typed config | done | `c9d201a` |
 | 1.3 | `config/base_config.yaml` — DOE config | done | `ac039fe` |
-| 1.4 | `src/geaptimes/data/queries.py` + `utils/logger.py` | pending | — |
+| 1.4 | `src/geaptimes/data/queries.py` + `utils/logger.py` | done | `a25a81d` |
 | 1.5 | `data_notebooks/01_citibike_prep.ipynb` | pending | — |
 | 1.6 | `scripts/setup_gcp.py` | pending | — |
 
