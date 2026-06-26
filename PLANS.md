@@ -270,7 +270,7 @@ Folds in surviving 4A items. Ordered by user priority (lineage first) + dependen
 | P2.3 | Hybrid GCPC serving (4A.6): `gcpc==2.22.0` after resolver dry-run; ModelUpload/EndpointCreate/ModelDeploy; AutoML+BQML stay custom | done | a8f06de |
 | P2.4 | Richer artifacts (4A.4): `Output[Metrics]` on score, `Output[Markdown]` ranking on compare; *candidate:* replace base64 fan-in with artifact fan-in | done | 002812c |
 | P2.5 | force_rebuild (4A.5) + machine right-size (4A.8, e2-standard-4→e2-standard-2) | done | ea9cad4 |
-| P2.6 | Docs: hybrid-GCPC decision in CODE_STANDARDS + CLAUDE | pending | |
+| P2.6 | Docs: hybrid-GCPC decision in CODE_STANDARDS + CLAUDE | done | 8374006 |
 | P2.7 | **One full AutoML run** = redesign acceptance + first live validation of `e8a0f5f` read fix + train/infer cache-reuse → STOP | pending | |
 
 **P2.3 design notes (full-hybrid, approved 2026-06-26):** resolver dry-run clean (gcpc 2.22.0 adds only
@@ -302,6 +302,20 @@ unsized** — they run in Google-managed images. Reviews-as-gates ([[sdd-reviews
 reviewer ✅ + code-quality reviewer ✅ Approved (only minors; reviewer confirmed against GEAP docs that
 cpu/mem limits → closest machine type). Offline gate 175 passed. Live machine-size effect first
 observed in P2.7.
+
+**P2.6 design notes (2026-06-26):** New authoritative section in `CODE_STANDARDS.md` ("Pipeline
+components — GCPC vs custom (hybrid serving)") states the split rule for adding pipeline nodes: GCPC
+ops **only** for opaque managed serving infra (importer → ModelUploadOp → EndpointCreateOp +
+ModelDeployOp; standardized `google.Vertex*` artifacts + lineage; compile-time-only dep, no image
+rebuild; test wiring via compile), custom `@dsl.component` shells for **all logic** (data prep,
+build-tables, train/infer, shared score, compare, endpoint/batch predict; AutoML + BQML fully custom).
+Records the three intentional deviations from a pure-GCPC lifecycle (custom display-name teardown via
+ExitHandler since `ModelUndeployOp`/`EndpointDeleteOp` can't consume in-handler artifacts; custom
+`endpoint_predict` consuming `VertexEndpoint.resourceName` `.after(deploy)`; `_size` applied to custom
+pods only). `CLAUDE.md` gets a one-paragraph pointer to that section. Reviews-as-gates
+([[sdd-reviews-as-gates]]): accuracy reviewer verified every claim against the code — all ACCURATE bar
+one wording nit (kfp 2.16.1 is the *locked* version, constrained `>=2,<3` in pyproject, not
+hard-pinned), fixed before commit. Docs-only; offline gate still green (175 passed).
 
 **P2.4 design notes (2026-06-26):** `score_and_track` now emits `Output[Metrics]` (per-backend MAE /
 RMSE scalars, via `metrics.log_metric`) shown on the task in the Vertex Pipelines UI — in addition to
