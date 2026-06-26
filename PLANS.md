@@ -266,7 +266,7 @@ Folds in surviving 4A items. Ordered by user priority (lineage first) + dependen
 | # | Item | Status | Commit |
 |---|------|--------|--------|
 | P2.1 | **Data→serving lineage (4A.2+4A.3):** `build_tables` emits table-ref `Dataset` artifacts (`bq://` + config fingerprint + rows); wire into train/infer **and** TimesFM serving steps (closes edge-less serving branch) | done | be5383d |
-| P2.2 | Self-bootstrapping data prep (4A.1): `ensure_source`/`ensure_prepped` front steps, existence + fingerprint guard | pending | |
+| P2.2 | Self-bootstrapping data prep (4A.1): `ensure_source`/`ensure_prepped` front steps, existence + fingerprint guard | done | af65db6 |
 | P2.3 | Hybrid GCPC serving (4A.6): `gcpc==2.22.0` after resolver dry-run; ModelUpload/EndpointCreate/ModelDeploy/Undeploy/EndpointDelete; AutoML+BQML stay custom | pending | |
 | P2.4 | Richer artifacts (4A.4): `Output[Metrics]` on score, `Output[Markdown]` ranking on compare; *candidate:* replace base64 fan-in with artifact fan-in | pending | |
 | P2.5 | force_rebuild (4A.5) + machine right-size (4A.8, e2-standard-4→e2-standard-2) | pending | |
