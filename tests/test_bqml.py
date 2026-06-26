@@ -46,7 +46,8 @@ def test_create_model_sql_xreg() -> None:
     assert "time_series_id_col = 'start_station_name'" in sql
     assert "data_frequency = 'DAILY'" in sql
     assert "holiday_region = 'US'" in sql
-    assert 'labels = [("solution", "geaptimes")]' in sql
+    # BQML CREATE MODEL can't carry resource labels in OPTIONS (applied via API in fit()).
+    assert "labels" not in sql
     assert "FROM `p.ds.train`" in sql
     for cov in COVS:  # XREG regressors are selected for training
         assert cov in sql
@@ -106,16 +107,24 @@ def test_model_id_includes_config_slug() -> None:
     assert fc.model_id == "p.ds.bqml_arima_xreg__top25_h14_t14_v14"
 
 
-def test_fit_runs_create_model() -> None:
+def test_fit_runs_create_model_and_labels() -> None:
     cfg = _cfg()
     seen: list[str] = []
+    labeled: list[tuple[str, dict[str, str]]] = []
 
     def runner(sql: str) -> pd.DataFrame:
         seen.append(sql)
         return pd.DataFrame()
 
-    BQMLForecaster(cfg.models[0], cfg, query_runner=runner).fit()
+    BQMLForecaster(
+        cfg.models[0],
+        cfg,
+        query_runner=runner,
+        model_labeler=lambda model_id, labels: labeled.append((model_id, labels)),
+    ).fit()
     assert "CREATE OR REPLACE MODEL" in seen[0]
+    # the model resource is labelled via the API seam after creation
+    assert labeled == [("p.ds.bqml_arima_xreg__top25_h14_t14_v14", {"solution": "geaptimes"})]
 
 
 def test_predict_maps_forecast_and_quantiles() -> None:

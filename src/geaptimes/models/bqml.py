@@ -56,12 +56,6 @@ _FC_VALUE = "forecast_value"
 _FC_STD_ERR = "standard_error"
 
 
-def _labels_struct() -> str:
-    """Render RESOURCE_LABELS as a BQML ``labels=[("k","v")]`` option value."""
-    pairs = ", ".join(f'("{k}", "{v}")' for k, v in RESOURCE_LABELS.items())
-    return f"[{pairs}]"
-
-
 def _xreg_columns(data: "DataConfig", params: "BQMLParams") -> list[str]:
     """Future regressors for XREG: the available-at-forecast covariates (empty for plain ARIMA)."""
     if params.model_type == "ARIMA_PLUS_XREG" and params.use_covariates:
@@ -89,7 +83,9 @@ def build_create_model_sql(
     ]
     if data.holiday_region:
         options.append(f"holiday_region = '{data.holiday_region}'")
-    options.append(f"labels = {_labels_struct()}")
+    # NB: BQML CREATE MODEL does not accept resource labels in OPTIONS (the `labels` key collides
+    # with the training-label-column semantics, typed ARRAY<STRING>). The solution=geaptimes label
+    # is applied to the model resource after creation via the BigQuery API (see fit()).
     options_sql = ",\n    ".join(options)
     cols_sql = ", ".join(select_cols)
     return f"""CREATE OR REPLACE MODEL `{model_id}`
@@ -135,10 +131,12 @@ class BQMLForecaster(Forecaster):
         cfg: "ExperimentConfig",
         *,
         query_runner: "Callable[[str], pd.DataFrame] | None" = None,
+        model_labeler: "Callable[[str, dict[str, str]], None] | None" = None,
     ) -> None:
         super().__init__(model_cfg, cfg)
         self.params: BQMLParams = cast("BQMLParams", model_cfg.params)
         self._query_runner = query_runner or self._default_query_runner
+        self._model_labeler = model_labeler or self._default_model_labeler
         slug = config_slug(cfg.data, cfg.forecast)
         self.model_id = f"{cfg.project.id}.{cfg.project.bq_dataset}.{model_cfg.name}__{slug}"
 
@@ -155,8 +153,17 @@ class BQMLForecaster(Forecaster):
         client = bigquery.Client(project=self.cfg.project.id)
         return client.query(sql).to_dataframe()
 
+    def _default_model_labeler(self, model_id: str, labels: dict[str, str]) -> None:
+        """Apply resource labels to the trained model via the BigQuery API (not run in Stage 2)."""
+        from google.cloud import bigquery  # noqa: PLC0415 - lazy cloud import
+
+        client = bigquery.Client(project=self.cfg.project.id)
+        model = client.get_model(model_id)
+        model.labels = labels
+        client.update_model(model, ["labels"])
+
     def fit(self) -> None:
-        """Create (train) the ARIMA model in BigQuery."""
+        """Create (train) the ARIMA model in BigQuery and apply resource labels."""
         sql = build_create_model_sql(
             self.cfg,
             self.params,
@@ -165,6 +172,9 @@ class BQMLForecaster(Forecaster):
         )
         logger.info("creating BQML model %s", self.model_id)
         self._query_runner(sql)
+        # BQML CREATE MODEL can't carry resource labels in OPTIONS; label the model resource here.
+        logger.info("labeling BQML model %s", self.model_id)
+        self._model_labeler(self.model_id, dict(RESOURCE_LABELS))
 
     def predict(self) -> ForecastResult:
         """Run ``ML.FORECAST`` and map the result onto the standardized prediction frame."""
