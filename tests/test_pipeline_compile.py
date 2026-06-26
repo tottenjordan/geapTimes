@@ -65,9 +65,11 @@ def test_endpoint_mode_transient_full_graph(tmp_path: Path) -> None:
     assert "exec-teardown-serving" in execs
     # batch path not present in endpoint mode
     assert "exec-batch-predict" not in execs
-    # two in-process backends (bqml + automl) -> two run-backend executors
-    run_backends = {e for e in execs if e.startswith("exec-run-backend")}
-    assert len(run_backends) == 2
+    # two in-process backends (bqml + automl) -> one train + one infer executor each
+    assert len({e for e in execs if e.startswith("exec-train-backend")}) == 2
+    assert len({e for e in execs if e.startswith("exec-infer-backend")}) == 2
+    # one shared score-and-track per backend: bqml + automl + timesfm = 3
+    assert len({e for e in execs if e.startswith("exec-score-and-track")}) == 3
 
 
 def test_batch_mode_uses_batch_predict_and_no_endpoint(tmp_path: Path) -> None:
@@ -93,7 +95,9 @@ def test_timesfm_disabled_skips_serving(tmp_path: Path) -> None:
         {"name": "bqml_arima_xreg", "params": {"type": "bqml"}},
     ]
     execs = _executors(_cfg(models), tmp_path)
-    assert "exec-run-backend" in execs
+    assert "exec-train-backend" in execs
+    assert "exec-infer-backend" in execs
+    assert "exec-score-and-track" in execs
     assert "exec-register-timesfm" not in execs
     assert "exec-deploy-endpoint" not in execs
     assert "exec-batch-predict" not in execs
@@ -102,10 +106,17 @@ def test_timesfm_disabled_skips_serving(tmp_path: Path) -> None:
 
 def test_task_display_names_are_readable(tmp_path: Path) -> None:
     names = _display_names(_cfg(ALL_THREE), tmp_path)
-    # The two run-backend tasks are disambiguated by model name (otherwise both render as
-    # "run-backend"/"run-backend-2" in the console).
-    assert "run-backend:bqml_arima_xreg" in names
-    assert "run-backend:automl" in names
+    # Each in-process backend's train/infer/score tasks are disambiguated by model name (otherwise
+    # they render as "train-backend"/"train-backend-2" etc. in the console).
+    assert {
+        "train:bqml_arima_xreg",
+        "infer:bqml_arima_xreg",
+        "score:bqml_arima_xreg",
+        "train:automl",
+        "infer:automl",
+        "score:automl",
+        "score:timesfm",
+    } <= names
     assert {
         "build-tables",
         "register-timesfm",

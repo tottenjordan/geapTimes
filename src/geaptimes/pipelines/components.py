@@ -24,7 +24,9 @@ class PipelineComponents:
     """The compiled KFP components for the comparison pipeline, bound to one runtime image."""
 
     build_tables: Any
-    run_backend: Any
+    train_backend: Any
+    infer_backend: Any
+    score_and_track: Any
     register_timesfm: Any
     deploy_endpoint: Any
     endpoint_predict: Any
@@ -33,7 +35,7 @@ class PipelineComponents:
     compare_backends: Any
 
 
-def build_components(image: str) -> PipelineComponents:  # noqa: PLR0915 - one nested def per component
+def build_components(image: str) -> PipelineComponents:  # noqa: PLR0915, C901 - one nested def per component
     """Build the comparison-pipeline components bound to *image* (the geapTimes runtime container).
 
     ``base_image`` must be fixed when ``@dsl.component`` is applied, so the components are created
@@ -51,20 +53,43 @@ def build_components(image: str) -> PipelineComponents:  # noqa: PLR0915 - one n
         return names["infer"]
 
     @dsl.component(base_image=image)
-    def run_backend(
-        config_json: str,
-        model_name: str,
-        tables: str,
-        predictions: dsl.Output[dsl.Dataset],
-    ) -> dict:
-        from geaptimes.experiment.tracking import ExperimentTracker
+    def train_backend(config_json: str, model_name: str, tables: str) -> str:
         from geaptimes.pipelines import steps
         from geaptimes.schemas import ExperimentConfig
 
         _ = tables  # ordering dependency on build_tables; the table names come from config
         cfg = ExperimentConfig.model_validate_json(config_json)
-        result = steps.run_backend_step(cfg, model_name, tracker=ExperimentTracker(cfg))
-        result.predictions.to_parquet(predictions.path, index=False)
+        return steps.train_backend_step(cfg, model_name)
+
+    @dsl.component(base_image=image)
+    def infer_backend(
+        config_json: str,
+        model_name: str,
+        model_reference: str,
+        predictions: dsl.Output[dsl.Dataset],
+    ) -> None:
+        from geaptimes.pipelines import steps
+        from geaptimes.schemas import ExperimentConfig
+
+        cfg = ExperimentConfig.model_validate_json(config_json)
+        frame = steps.infer_backend_step(cfg, model_name, model_reference)
+        frame.to_parquet(predictions.path, index=False)
+
+    @dsl.component(base_image=image)
+    def score_and_track(
+        config_json: str,
+        model_name: str,
+        predictions: dsl.Input[dsl.Dataset],
+    ) -> dict:
+        import pandas as pd
+
+        from geaptimes.experiment.tracking import ExperimentTracker
+        from geaptimes.pipelines import steps
+        from geaptimes.schemas import ExperimentConfig
+
+        cfg = ExperimentConfig.model_validate_json(config_json)
+        frame = pd.read_parquet(predictions.path)
+        result = steps.score_and_track_step(cfg, model_name, frame, tracker=ExperimentTracker(cfg))
         metrics = result.record.metrics
         return {
             "model": result.record.model,
@@ -93,34 +118,26 @@ def build_components(image: str) -> PipelineComponents:  # noqa: PLR0915 - one n
         config_json: str,
         endpoint_resource_name: str,
         predictions: dsl.Output[dsl.Dataset],
-    ) -> dict:
-        from geaptimes.experiment.tracking import ExperimentTracker
+    ) -> None:
         from geaptimes.pipelines import steps
         from geaptimes.schemas import ExperimentConfig
 
         cfg = ExperimentConfig.model_validate_json(config_json)
         frame = steps.endpoint_predict_step(cfg, endpoint_resource_name)
-        result = steps.score_and_track_step(cfg, "timesfm", frame, tracker=ExperimentTracker(cfg))
         frame.to_parquet(predictions.path, index=False)
-        metrics = result.record.metrics
-        return {"model": "timesfm", "mae": float(metrics["mae"]), "rmse": float(metrics["rmse"])}
 
     @dsl.component(base_image=image)
     def batch_predict(
         config_json: str,
         model_resource_name: str,
         predictions: dsl.Output[dsl.Dataset],
-    ) -> dict:
-        from geaptimes.experiment.tracking import ExperimentTracker
+    ) -> None:
         from geaptimes.pipelines import steps
         from geaptimes.schemas import ExperimentConfig
 
         cfg = ExperimentConfig.model_validate_json(config_json)
         frame = steps.batch_predict_timesfm_step(cfg, model_resource_name)
-        result = steps.score_and_track_step(cfg, "timesfm", frame, tracker=ExperimentTracker(cfg))
         frame.to_parquet(predictions.path, index=False)
-        metrics = result.record.metrics
-        return {"model": "timesfm", "mae": float(metrics["mae"]), "rmse": float(metrics["rmse"])}
 
     @dsl.component(base_image=image)
     def teardown_serving(config_json: str) -> None:
@@ -144,7 +161,9 @@ def build_components(image: str) -> PipelineComponents:  # noqa: PLR0915 - one n
 
     return PipelineComponents(
         build_tables=build_tables,
-        run_backend=run_backend,
+        train_backend=train_backend,
+        infer_backend=infer_backend,
+        score_and_track=score_and_track,
         register_timesfm=register_timesfm,
         deploy_endpoint=deploy_endpoint,
         endpoint_predict=endpoint_predict,

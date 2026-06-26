@@ -224,6 +224,40 @@ rationale: `docs/notes/pipeline-parallelfor-deferred.md`.
 
 ---
 
+## Tier 2 — Stage 4 Redesign (Train/Inference Split + Hybrid GCPC) — ACTIVE
+
+Approved 2026-06-26; snapshot `docs/plans/005_stage-4-redesign-train-inference-split.md`. Splits
+every backend into **train → infer → score** (trained model passed by reference, so an infer-side
+failure re-uses the cached model and the AutoML table-name bug class cannot recur) feeding **one
+shared score/track** step. **Phased:** Phase 1 = the split (custom, no new deps); Phase 2 = hybrid
+GCPC serving + surviving 4A items. Each phase ends in a STOP checkpoint.
+
+### Phase 1 — Train / Inference / Score split (custom; no new dependencies)
+
+| # | Item | Status | Commit |
+|---|------|--------|--------|
+| P1.1 | `Forecaster` interface: `model_reference` + `attach_model` (base default; bqml/automl overrides) | done | b375445 |
+| P1.2 | `steps.py`: `train_backend_step` + `infer_backend_step`; shared `score_and_track_step` (model-config params); retire `run_backend_step` | done | b375445 |
+| P1.3 | `components.py`: `train_backend`/`infer_backend`/`score_and_track`; strip score+track from endpoint/batch predict | done | b375445 |
+| P1.4 | `pipeline.py`: rewire `_body` to train→infer→score per backend + TimesFM→score; `train:`/`infer:`/`score:` display names | done | b375445 |
+| P1.5 | Offline gate green + compile asserts train→infer→score edges; **cheap `--disable-automl` live run**; STOP | in progress | |
+
+Offline gate green (158 passed; ruff/format/ty clean) and the compiled DAG verified:
+`build-tables → train:{m} → infer:{m} → score:{m} → compare`, TimesFM `register → deploy →
+endpoint-predict → score:timesfm → compare`, teardown as ExitHandler. **Remaining for P1.5:** rebuild
+the runtime image + submit `--disable-automl` (cheap BQML+TimesFM validation), then STOP for approval.
+AutoML deferred to the Phase 2 full run (avoids a throwaway ~2.5h; also first live check of `e8a0f5f`).
+
+### Phase 2 — Hybrid GCPC serving + data prep + artifacts (outline)
+
+Folds in surviving 4A items (4A.1–4A.5, 4A.8). Hybrid GCPC for the TimesFM serving lifecycle only
+(`uv add google-cloud-pipeline-components`, pin-verify vs aiplatform 1.158.0 / kfp 2.16.x); AutoML +
+BQML stay custom SDK-wrappers (`AutoMLForecastingTrainingJobRunOp` out of scope). Self-bootstrapping
+data prep, richer artifacts, force_rebuild, machine right-size, docs → **one full AutoML run** =
+redesign acceptance + first live validation of the `e8a0f5f` read fix → STOP.
+
+---
+
 ## Tier 2 — Stage 3 (Experiment Tracking & DOE Framework) — COMPLETE
 
 A config-driven **Design-of-Experiments** matrix expands one base config into a grid of variants;

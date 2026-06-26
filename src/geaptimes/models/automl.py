@@ -250,6 +250,21 @@ class AutoMLForecaster(Forecaster):
             self._aiplatform = aiplatform
         return self._aiplatform
 
+    @property
+    def model_reference(self) -> str:
+        """Resource name of the trained Vertex ``Model`` (empty until ``fit()`` has run)."""
+        return self.model.resource_name if self.model is not None else ""
+
+    def attach_model(self, reference: str) -> None:
+        """Resolve the trained Vertex ``Model`` by resource name so ``predict()`` skips training.
+
+        Lets the infer step batch-predict against a model trained in a prior train step (or a prior
+        run), so an inference-side failure costs only a re-predict, never a re-train.
+        """
+        aip = self._resolve_aiplatform()
+        aip.init(project=self.cfg.project.id, location=self.cfg.project.region)
+        self.model = aip.Model(reference)
+
     def fit(self) -> None:
         """Create a TimeSeriesDataset from the train table and launch managed training."""
         self.validate_config()

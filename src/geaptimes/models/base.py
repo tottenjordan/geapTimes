@@ -75,3 +75,22 @@ class Forecaster(ABC):
     @abstractmethod
     def predict(self) -> ForecastResult:
         """Produce a forecast over the configured horizon."""
+
+    @property
+    def model_reference(self) -> str:
+        """Handle to the trained model, passed between split train/infer pipeline steps.
+
+        Returned by the train step after :meth:`fit` and fed back via :meth:`attach_model` in the
+        infer step so a failed inference re-uses the already-trained model instead of re-training.
+        Subclasses with a durable trained-model handle (a BQML model id, a Vertex ``Model`` resource
+        name) override this; the default empty string suits zero-shot backends with nothing to pass.
+        """
+        return ""
+
+    def attach_model(self, reference: str) -> None:  # noqa: B027 - intentional no-op default, not abstract
+        """Prepare :meth:`predict` to run against an already-trained model, without re-:meth:`fit`.
+
+        ``reference`` is a value previously produced by :attr:`model_reference`. The default is a
+        no-op (backends whose ``predict`` is self-contained, or zero-shot models); backends that
+        need a live handle to forecast (e.g. AutoML resolving a Vertex ``Model``) override this.
+        """

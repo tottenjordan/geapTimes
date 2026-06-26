@@ -15,7 +15,6 @@ from geaptimes.experiment.metrics import point_metrics
 from geaptimes.experiment.runner import (
     RunRecord,
     _default_actuals_loader,
-    _run_params,
     _safe_run_name,
     _utc_now,
 )
@@ -193,62 +192,54 @@ def _run_bq(cfg: "ExperimentConfig", sql: str) -> Any:  # noqa: ANN401  # pragma
     return bigquery.Client(project=cfg.project.id).query(sql).result()
 
 
-def run_backend_step(  # noqa: PLR0913 - cfg + name + injected seams (offline-testable)
+def train_backend_step(
     cfg: "ExperimentConfig",
     model_name: str,
     *,
     forecaster: "Forecaster | None" = None,
-    actuals_loader: "Callable[[ExperimentConfig], pd.DataFrame] | None" = None,
-    tracker: "ExperimentTracker | None" = None,
-    now: "Callable[[], datetime] | None" = None,
-) -> BackendResult:
-    """Run one backend (fit -> predict -> metrics), tracking it if a tracker is given."""
-    clock = now or _utc_now
-    load_actuals = actuals_loader or _default_actuals_loader
+) -> str:
+    """Train one backend and return its :attr:`~geaptimes.models.base.Forecaster.model_reference`.
+
+    The reference (a BQML model id, a Vertex ``Model`` resource name, ``""`` for zero-shot) is the
+    only thing the split needs to pass to :func:`infer_backend_step`: it lets the (separate) infer
+    pod re-use the trained model, so an inference-side failure never forces a re-train. No tracking
+    happens here — params/metrics/artifacts are logged once, in :func:`score_and_track_step`.
+    """
     fc = forecaster or _build_forecaster(cfg, model_name)
-    data = cfg.data
-    run_name = _safe_run_name(f"{fc.name}-{clock().strftime('%Y%m%d-%H%M%S')}")
-    actuals = load_actuals(cfg)
+    logger.info("training backend %s", fc.name)
+    fc.fit()
+    return fc.model_reference
 
-    def _execute() -> "tuple[dict[str, float], pd.DataFrame, dict[str, Any]]":
-        fc.fit()
-        result = fc.predict()
-        metrics = point_metrics(
-            result.predictions,
-            actuals,
-            series_col=data.series_column,
-            time_col=data.time_column,
-            target_col=data.target_column,
-        )
-        return metrics, result.predictions, dict(result.metadata)
 
-    logger.info("running backend %s as %s", fc.name, run_name)
-    artifact_uri = ""
-    if tracker is not None:
-        with tracker.run(run_name):
-            metrics, predictions, metadata = _execute()
-            tracker.log_params(_run_params(cfg, fc, {}))
-            tracker.log_metrics(metrics)
-            artifact_uri = tracker.log_artifacts(run_name, config=cfg, predictions=predictions)
-    else:
-        metrics, predictions, metadata = _execute()
+def infer_backend_step(
+    cfg: "ExperimentConfig",
+    model_name: str,
+    model_reference: str,
+    *,
+    forecaster: "Forecaster | None" = None,
+) -> "pd.DataFrame":
+    """Infer with a backend trained in a prior step, attached by ``model_reference``.
 
-    record = RunRecord(
-        run_name=run_name,
-        model=fc.name,
-        overrides={},
-        metrics=metrics,
-        metadata=metadata,
-        artifact_uri=artifact_uri,
+    Builds the forecaster, attaches the already-trained model (a no-op for backends whose
+    ``predict`` is self-contained, e.g. BQML referencing the model by config-derived id), predicts,
+    and returns the standardized long frame. Scoring + tracking are deferred to
+    :func:`score_and_track_step`, the single tracking point for every backend.
+    """
+    fc = forecaster or _build_forecaster(cfg, model_name)
+    fc.attach_model(model_reference)
+    logger.info("inferring backend %s from %s", fc.name, model_reference or "<config>")
+    return fc.predict().predictions
+
+
+def _model_run_params(cfg: "ExperimentConfig", model_name: str) -> dict[str, Any]:
+    """Params logged for any backend run, derived from the named model's config (no forecaster)."""
+    backend = next(
+        (m.params.type for m in cfg.models if m.name == model_name),
+        model_name,
     )
-    return BackendResult(record=record, predictions=predictions)
-
-
-def _served_run_params(cfg: "ExperimentConfig", model_name: str) -> dict[str, Any]:
-    """Params logged for a served (cloud-inference) backend run, with no in-process forecaster."""
     return {
         "model": model_name,
-        "backend": "timesfm-served",
+        "backend": backend,
         "horizon": cfg.forecast.horizon,
         "target": cfg.data.target_column,
         "top_n": cfg.data.station_filter.top_n,
@@ -264,16 +255,18 @@ def score_and_track_step(  # noqa: PLR0913 - cfg + name + frame + injected seams
     tracker: "ExperimentTracker | None" = None,
     now: "Callable[[], datetime] | None" = None,
 ) -> BackendResult:
-    """Score externally-produced predictions (e.g. served TimesFM) against the TEST actuals.
+    """Score a backend's predictions against the TEST actuals and track the run.
 
-    Mirrors ``run_backend_step`` for backends whose predictions come from cloud inference rather
-    than an in-process ``Forecaster``, so the served path produces the same metrics +
-    ``ExperimentRun`` + artifacts and feeds the comparison identically.
+    The single, shared tail of every backend chain: the in-process backends (train → infer) and the
+    TimesFM serving chain (register → deploy → predict) all feed their predictions here, so each
+    produces the same metrics + ``ExperimentRun`` + artifacts and the comparison consumes them
+    identically. Params are derived from the model config (:func:`_model_run_params`) rather than a
+    live forecaster, since this pod only has the predictions, not the trained model.
     """
     clock = now or _utc_now
     load_actuals = actuals_loader or _default_actuals_loader
     data = cfg.data
-    run_name = _safe_run_name(f"{model_name}-served-{clock().strftime('%Y%m%d-%H%M%S')}")
+    run_name = _safe_run_name(f"{model_name}-{clock().strftime('%Y%m%d-%H%M%S')}")
     actuals = load_actuals(cfg)
     metrics = point_metrics(
         predictions,
@@ -282,11 +275,11 @@ def score_and_track_step(  # noqa: PLR0913 - cfg + name + frame + injected seams
         time_col=data.time_column,
         target_col=data.target_column,
     )
-    logger.info("scoring served backend %s as %s", model_name, run_name)
+    logger.info("scoring backend %s as %s", model_name, run_name)
     artifact_uri = ""
     if tracker is not None:
         with tracker.run(run_name):
-            tracker.log_params(_served_run_params(cfg, model_name))
+            tracker.log_params(_model_run_params(cfg, model_name))
             tracker.log_metrics(metrics)
             artifact_uri = tracker.log_artifacts(run_name, config=cfg, predictions=predictions)
     record = RunRecord(
@@ -294,7 +287,7 @@ def score_and_track_step(  # noqa: PLR0913 - cfg + name + frame + injected seams
         model=model_name,
         overrides={},
         metrics=metrics,
-        metadata={"served": True},
+        metadata={},
         artifact_uri=artifact_uri,
     )
     return BackendResult(record=record, predictions=predictions)

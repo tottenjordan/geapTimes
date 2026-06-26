@@ -89,7 +89,7 @@ def test_responses_to_frame_maps_by_series() -> None:
     assert frame.iloc[-1]["q90"] == 3.5
 
 
-# -- run_backend ----------------------------------------------------------------------------------
+# -- train / infer --------------------------------------------------------------------------------
 class _FakeForecaster(Forecaster):
     def __init__(
         self, model_cfg: ModelConfig, cfg: ExperimentConfig, predictions: pd.DataFrame
@@ -97,9 +97,17 @@ class _FakeForecaster(Forecaster):
         super().__init__(model_cfg, cfg)
         self._predictions = predictions
         self.fitted = False
+        self.attached: str | None = None
 
     def fit(self) -> None:
         self.fitted = True
+
+    @property
+    def model_reference(self) -> str:
+        return f"ref-{self.name}"
+
+    def attach_model(self, reference: str) -> None:
+        self.attached = reference
 
     def predict(self) -> ForecastResult:
         return ForecastResult(predictions=self._predictions, metadata={"backend": self.name})
@@ -160,30 +168,24 @@ def _actuals_frame() -> pd.DataFrame:
     )
 
 
-def test_run_backend_step_tracks_and_returns_result() -> None:
+def test_train_backend_step_fits_and_returns_reference() -> None:
     cfg = _cfg()
     fake = _FakeForecaster(cfg.models[1], cfg, _predictions_frame())
-    aip = _TrackingAip()
-    writes: list[tuple[str, str]] = []
-    tracker = ExperimentTracker(
-        cfg, aiplatform=aip, artifact_sink=lambda uri, text: writes.append((uri, text))
-    )
-    out = steps.run_backend_step(
-        cfg,
-        "bqml_arima_xreg",
-        forecaster=fake,
-        actuals_loader=lambda _c: _actuals_frame(),
-        tracker=tracker,
-        now=lambda: datetime(2018, 3, 18, 12, 0, 0),  # noqa: DTZ001 - fixed clock for test
-    )
+    ref = steps.train_backend_step(cfg, "bqml_arima_xreg", forecaster=fake)
     assert fake.fitted is True
-    assert out.record.model == "bqml_arima_xreg"
-    assert out.record.metrics["n_points"] == HORIZON
-    assert out.record.artifact_uri.startswith("gs://b/experiments/")
-    assert aip.metrics  # metrics logged
-    assert aip.params[0]["backend"] == "bqml"  # from _run_params via model_cfg.params.type
-    assert len(writes) == 2  # config.json + predictions.csv
-    assert len(out.predictions) == HORIZON
+    assert ref == "ref-bqml_arima_xreg"  # the model handle passed on to the infer step
+
+
+def test_infer_backend_step_attaches_reference_and_predicts() -> None:
+    cfg = _cfg()
+    fake = _FakeForecaster(cfg.models[1], cfg, _predictions_frame())
+    frame = steps.infer_backend_step(cfg, "bqml_arima_xreg", "ref-bqml_arima_xreg", forecaster=fake)
+    # attach_model is called with the reference (so a failed infer re-uses the trained model), and
+    # the trained model is NOT re-fit in the infer pod.
+    assert fake.attached == "ref-bqml_arima_xreg"
+    assert fake.fitted is False
+    assert list(frame.columns) == PREDICTION_COLUMNS
+    assert len(frame) == HORIZON
 
 
 # -- serving steps via a fake aiplatform ----------------------------------------------------------
@@ -398,8 +400,8 @@ def test_teardown_serving_step_can_keep_model() -> None:
     assert aip.model_list_filter is None  # never listed models
 
 
-# -- score_and_track (served-backend path) --------------------------------------------------------
-def test_score_and_track_step_scores_and_tracks() -> None:
+# -- score_and_track (shared scorer for every backend) --------------------------------------------
+def test_score_and_track_step_scores_and_tracks_served_backend() -> None:
     cfg = _cfg()
     aip = _TrackingAip()
     writes: list[tuple[str, str]] = []
@@ -415,11 +417,28 @@ def test_score_and_track_step_scores_and_tracks() -> None:
         now=lambda: datetime(2018, 3, 18, 12, 0, 0),  # noqa: DTZ001 - fixed clock for test
     )
     assert out.record.model == "timesfm"
-    assert out.record.metadata["served"] is True
     assert out.record.metrics["n_points"] == HORIZON
     assert out.record.artifact_uri.startswith("gs://b/experiments/")
-    assert aip.params[0]["backend"] == "timesfm-served"
+    # backend is derived from the model config (params.type), uniform across every backend.
+    assert aip.params[0]["backend"] == "timesfm"
+    assert aip.params[0]["model"] == "timesfm"
     assert len(writes) == 2  # config.json + predictions.csv
+
+
+def test_score_and_track_step_logs_in_process_backend_params() -> None:
+    cfg = _cfg()
+    aip = _TrackingAip()
+    tracker = ExperimentTracker(cfg, aiplatform=aip, artifact_sink=lambda _uri, _text: None)
+    out = steps.score_and_track_step(
+        cfg,
+        "bqml_arima_xreg",
+        _predictions_frame(),
+        actuals_loader=lambda _c: _actuals_frame(),
+        tracker=tracker,
+        now=lambda: datetime(2018, 3, 18, 12, 0, 0),  # noqa: DTZ001 - fixed clock for test
+    )
+    assert out.record.model == "bqml_arima_xreg"
+    assert aip.params[0]["backend"] == "bqml"  # from model_cfg.params.type
 
 
 # -- compare --------------------------------------------------------------------------------------

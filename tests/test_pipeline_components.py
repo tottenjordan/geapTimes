@@ -76,24 +76,62 @@ def test_build_tables_component(monkeypatch: pytest.MonkeyPatch) -> None:
     assert COMPS.build_tables.python_func(config_json=CFG_JSON) == "p.ds.infer__x"
 
 
-def test_run_backend_component(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_train_backend_component(monkeypatch: pytest.MonkeyPatch) -> None:
     seen: dict[str, Any] = {}
 
-    def fake_run(_cfg: object, model_name: str, *, tracker: object) -> BackendResult:
+    def fake_train(_cfg: object, model_name: str) -> str:
+        seen["model_name"] = model_name
+        return f"ref-{model_name}"
+
+    monkeypatch.setattr(steps, "train_backend_step", fake_train)
+    out = COMPS.train_backend.python_func(
+        config_json=CFG_JSON, model_name="bqml_arima_xreg", tables="t"
+    )
+    assert out == "ref-bqml_arima_xreg"
+    assert seen["model_name"] == "bqml_arima_xreg"
+
+
+def test_infer_backend_component(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    seen: dict[str, Any] = {}
+
+    def fake_infer(_cfg: object, model_name: str, model_reference: str) -> pd.DataFrame:
+        seen["model_name"] = model_name
+        seen["model_reference"] = model_reference
+        return _predictions()
+
+    monkeypatch.setattr(steps, "infer_backend_step", fake_infer)
+    art = _FakeArtifact(str(tmp_path / "preds.parquet"))
+    out = COMPS.infer_backend.python_func(
+        config_json=CFG_JSON,
+        model_name="bqml_arima_xreg",
+        model_reference="ref-bqml_arima_xreg",
+        predictions=art,
+    )
+    assert out is None  # infer writes the predictions artifact; scoring happens downstream
+    assert seen["model_reference"] == "ref-bqml_arima_xreg"
+    assert len(pd.read_parquet(art.path)) == 2
+
+
+def test_score_and_track_component(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    seen: dict[str, Any] = {}
+
+    def fake_score(
+        _cfg: object, model_name: str, _frame: object, *, tracker: object
+    ) -> BackendResult:
         seen["model_name"] = model_name
         seen["tracker"] = tracker
         return _backend_result(model_name)
 
-    monkeypatch.setattr(steps, "run_backend_step", fake_run)
+    monkeypatch.setattr(steps, "score_and_track_step", fake_score)
     monkeypatch.setattr("geaptimes.experiment.tracking.ExperimentTracker", _FakeTracker)
     art = _FakeArtifact(str(tmp_path / "preds.parquet"))
-    out = COMPS.run_backend.python_func(
-        config_json=CFG_JSON, model_name="bqml_arima_xreg", tables="t", predictions=art
+    _predictions().to_parquet(art.path, index=False)  # infer step's artifact, read back here
+    out = COMPS.score_and_track.python_func(
+        config_json=CFG_JSON, model_name="bqml_arima_xreg", predictions=art
     )
     assert out == {"model": "bqml_arima_xreg", "mae": 1.5, "rmse": 2.5}
     assert seen["model_name"] == "bqml_arima_xreg"
     assert isinstance(seen["tracker"], _FakeTracker)
-    assert len(pd.read_parquet(art.path)) == 2
 
 
 def test_register_and_deploy_components(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -105,30 +143,25 @@ def test_register_and_deploy_components(monkeypatch: pytest.MonkeyPatch) -> None
 
 
 def test_endpoint_predict_component(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    # The serving predict component now only emits the predictions artifact; scoring/tracking is
+    # the downstream shared score_and_track step.
     monkeypatch.setattr(steps, "endpoint_predict_step", lambda _cfg, _name: _predictions())
-    monkeypatch.setattr(
-        steps, "score_and_track_step", lambda _cfg, name, _frame, **_k: _backend_result(name)
-    )
-    monkeypatch.setattr("geaptimes.experiment.tracking.ExperimentTracker", _FakeTracker)
     art = _FakeArtifact(str(tmp_path / "tfm.parquet"))
     out = COMPS.endpoint_predict.python_func(
         config_json=CFG_JSON, endpoint_resource_name="ep", predictions=art
     )
-    assert out == {"model": "timesfm", "mae": 1.5, "rmse": 2.5}
+    assert out is None
     assert len(pd.read_parquet(art.path)) == 2
 
 
 def test_batch_predict_component(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr(steps, "batch_predict_timesfm_step", lambda _cfg, _name: _predictions())
-    monkeypatch.setattr(
-        steps, "score_and_track_step", lambda _cfg, name, _frame, **_k: _backend_result(name)
-    )
-    monkeypatch.setattr("geaptimes.experiment.tracking.ExperimentTracker", _FakeTracker)
     art = _FakeArtifact(str(tmp_path / "tfm.parquet"))
     out = COMPS.batch_predict.python_func(
         config_json=CFG_JSON, model_resource_name="m", predictions=art
     )
-    assert out == {"model": "timesfm", "mae": 1.5, "rmse": 2.5}
+    assert out is None
+    assert len(pd.read_parquet(art.path)) == 2
 
 
 def test_teardown_serving_component(monkeypatch: pytest.MonkeyPatch) -> None:

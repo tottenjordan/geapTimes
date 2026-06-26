@@ -230,10 +230,10 @@ def _write_config(tmp_path: Path, config: dict | None = None) -> str:
     return str(path)
 
 
-def _run_backend_executors(spec_path: Path) -> set[str]:
+def _train_backend_executors(spec_path: Path) -> set[str]:
     spec = yaml.safe_load(spec_path.read_text(encoding="utf-8"))
     execs = spec["deploymentSpec"]["executors"]
-    return {e for e in execs if e.startswith("exec-run-backend")}
+    return {e for e in execs if e.startswith("exec-train-backend")}
 
 
 def test_cli_disable_automl_drops_backend(tmp_path: Path) -> None:
@@ -257,8 +257,8 @@ def test_cli_disable_automl_drops_backend(tmp_path: Path) -> None:
         ]
     )
     assert rc == 0
-    # only bqml runs in-process; the AutoML run-backend is gone (timesfm is served, not run-backend)
-    assert _run_backend_executors(out) == {"exec-run-backend"}
+    # only bqml runs in-process; the AutoML train-backend is gone (timesfm is served, not trained)
+    assert _train_backend_executors(out) == {"exec-train-backend"}
 
 
 def test_cli_enable_and_disable_are_mutually_exclusive(tmp_path: Path) -> None:

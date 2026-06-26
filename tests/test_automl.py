@@ -189,6 +189,56 @@ def test_fit_wires_dataset_job_and_run() -> None:
     assert fc.training_job is not None
 
 
+class _FakeModel:
+    resource_name = "projects/p/locations/us-central1/models/123"
+
+
+class FakeAipModel(FakeAip):
+    """Like :class:`FakeAip` but ``run`` returns a Model object exposing ``resource_name``."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        outer = self
+
+        class AutoMLForecastingTrainingJob:
+            def __init__(self, **kw: object) -> None:
+                outer.job_kwargs = kw
+
+            def run(self, **kw: object) -> _FakeModel:
+                outer.run_kwargs = kw
+                return _FakeModel()
+
+        self.AutoMLForecastingTrainingJob = AutoMLForecastingTrainingJob
+
+
+def test_model_reference_empty_before_fit_and_resource_name_after() -> None:
+    cfg = _cfg()
+    fc = AutoMLForecaster(cfg.models[0], cfg, aiplatform=FakeAipModel())
+    assert fc.model_reference == ""  # nothing trained yet
+    fc.fit()
+    assert fc.model_reference == "projects/p/locations/us-central1/models/123"
+
+
+def test_attach_model_resolves_model_by_reference() -> None:
+    cfg = _cfg()
+    resolved: dict[str, object] = {}
+
+    class FakeAipAttach:
+        def init(self, **kw: object) -> None:
+            resolved["init"] = kw
+
+        def Model(self, reference: str) -> str:  # noqa: N802 - mirrors aiplatform.Model
+            resolved["reference"] = reference
+            return f"MODEL[{reference}]"
+
+    fc = AutoMLForecaster(cfg.models[0], cfg, aiplatform=FakeAipAttach())
+    fc.attach_model("projects/p/locations/us-central1/models/123")
+    assert resolved["init"] == {"project": "p", "location": "us-central1"}
+    assert resolved["reference"] == "projects/p/locations/us-central1/models/123"
+    # predict() now runs against the attached model without a re-fit (cheap infer retry).
+    assert fc.model == "MODEL[projects/p/locations/us-central1/models/123]"
+
+
 def test_predict_maps_flattened_output() -> None:
     cfg = _cfg()
     raw = pd.DataFrame(

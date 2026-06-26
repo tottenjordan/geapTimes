@@ -46,7 +46,7 @@ def pipeline_name(cfg: "ExperimentConfig") -> str:
     return f"geaptimes-comparison-{config_slug(cfg.data, cfg.forecast).replace('_', '-')}"
 
 
-def build_pipeline(cfg: "ExperimentConfig") -> "BaseComponent":
+def build_pipeline(cfg: "ExperimentConfig") -> "BaseComponent":  # noqa: PLR0915 - one task per DAG node
     """Build the comparison pipeline component for *cfg* (ready for ``compiler.Compiler``)."""
     comps = build_components(image_uri(cfg))
     root = pipeline_root(cfg)
@@ -64,14 +64,29 @@ def build_pipeline(cfg: "ExperimentConfig") -> "BaseComponent":
         tables.set_display_name("build-tables")
         rows = []
         for model_name in in_process:
-            backend = comps.run_backend(
+            # Each in-process backend is a train -> infer -> score chain. The trained model is
+            # passed by reference from train to infer (so an infer-side failure re-uses the cached
+            # trained model), and the predictions flow to the one shared score-and-track step.
+            train = comps.train_backend(
                 config_json=config_json, model_name=model_name, tables=tables.output
             )
-            backend.set_caching_options(caching)
-            # Per-task display name disambiguates the otherwise-identical run-backend tasks in the
-            # console (e.g. "run-backend:bqml_arima_xreg" vs "run-backend:automl").
-            backend.set_display_name(f"run-backend:{model_name}")
-            rows.append(backend.outputs["Output"])
+            train.set_caching_options(caching)
+            train.set_display_name(f"train:{model_name}")
+            infer = comps.infer_backend(
+                config_json=config_json,
+                model_name=model_name,
+                model_reference=train.output,
+            )
+            infer.set_caching_options(caching)
+            infer.set_display_name(f"infer:{model_name}")
+            score = comps.score_and_track(
+                config_json=config_json,
+                model_name=model_name,
+                predictions=infer.outputs["predictions"],
+            )
+            score.set_caching_options(caching)
+            score.set_display_name(f"score:{model_name}")
+            rows.append(score.outputs["Output"])
         if timesfm:
             register = comps.register_timesfm(config_json=config_json)
             register.set_caching_options(caching)
@@ -92,7 +107,15 @@ def build_pipeline(cfg: "ExperimentConfig") -> "BaseComponent":
                 )
                 served.set_display_name("timesfm:batch-predict")
             served.set_caching_options(caching)
-            rows.append(served.outputs["Output"])
+            # TimesFM has no training step; its served predictions feed the same shared scorer.
+            score_timesfm = comps.score_and_track(
+                config_json=config_json,
+                model_name="timesfm",
+                predictions=served.outputs["predictions"],
+            )
+            score_timesfm.set_caching_options(caching)
+            score_timesfm.set_display_name("score:timesfm")
+            rows.append(score_timesfm.outputs["Output"])
         compare = comps.compare_backends(rows=rows)
         compare.set_caching_options(caching)
         compare.set_display_name("compare-backends")
