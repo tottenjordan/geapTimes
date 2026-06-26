@@ -49,7 +49,7 @@ evaluation + the polished CLI remain in Stage 5.
 | # | Item | Status | Commit |
 |---|------|--------|--------|
 | 4.1 | `schemas.py` + `base_config.yaml` + `comparison_config.yaml` — `pipeline:` block (serving mode/teardown, AR image, pipeline_root) | done | `d8ec2ae` |
-| 4.2 | `models/timesfm_core.py` — factor TimesFM core (`compile_timesfm`/`forecast_arrays`/`rows_from_forecast`); refactor `timesfm.py` | pending | — |
+| 4.2 | `models/timesfm_core.py` — factor TimesFM core (`compile_timesfm`/`forecast_arrays`/`rows_from_forecast`); refactor `timesfm.py` | done | `c43836e` |
 | 4.3 | `pipelines/serving/{predictor,app}.py` — TimesFM serving predictor + Vertex-contract web app | pending | — |
 | 4.4 | `models/automl.py` — finish predict path (`_read_predictions` output read + `_flatten_automl_output`) | pending | — |
 | 4.5 | `pipelines/{config,steps}.py` — pure pipeline helpers + injected-seam step functions | pending | — |
