@@ -269,7 +269,7 @@ Folds in surviving 4A items. Ordered by user priority (lineage first) + dependen
 | P2.2 | Self-bootstrapping data prep (4A.1): `ensure_source`/`ensure_prepped` front steps, existence + fingerprint guard | done | af65db6 |
 | P2.3 | Hybrid GCPC serving (4A.6): `gcpc==2.22.0` after resolver dry-run; ModelUpload/EndpointCreate/ModelDeploy; AutoML+BQML stay custom | done | a8f06de |
 | P2.4 | Richer artifacts (4A.4): `Output[Metrics]` on score, `Output[Markdown]` ranking on compare; *candidate:* replace base64 fan-in with artifact fan-in | done | 002812c |
-| P2.5 | force_rebuild (4A.5) + machine right-size (4A.8, e2-standard-4→e2-standard-2) | pending | |
+| P2.5 | force_rebuild (4A.5) + machine right-size (4A.8, e2-standard-4→e2-standard-2) | done | ea9cad4 |
 | P2.6 | Docs: hybrid-GCPC decision in CODE_STANDARDS + CLAUDE | pending | |
 | P2.7 | **One full AutoML run** = redesign acceptance + first live validation of `e8a0f5f` read fix + train/infer cache-reuse → STOP | pending | |
 
@@ -285,6 +285,23 @@ stays custom, now consuming the `VertexEndpoint` artifact's `resourceName` + ord
 (3) The `prepped` lineage edge moved from register→predict (the served model reads prepped at predict
 time). (4) Batch path also uses `ModelUploadOp` (custom `batch_predict` consumes the `VertexModel`
 artifact). Live validation (incl. the `artifact_uri=""` baked-container assumption) deferred to P2.7.
+
+**P2.5 design notes (2026-06-26):** Two independent sub-features. (1) **force_rebuild (4A.5):**
+`DataConfig.force_rebuild: bool = False` + `submit.with_data_rebuild_forced` (model_dump→patch→
+model_validate, no input mutation) + `--force-data-rebuild` CLI flag (standalone `if`, composes with
+`--enable/--disable-automl`); the `ensure_source`/`ensure_prepped` components pass
+`force=cfg.data.force_rebuild` into the already-`force`-aware steps. (2) **machine right-size (4A.8):**
+`component_machine_type` was a DEAD config knob (declared + set in YAML, consumed nowhere) — so beyond
+flipping the default `e2-standard-4`→`e2-standard-2` I **wired it** so the right-size is real. KFP
+lightweight components expose no machine-type setter; on Vertex/GEAP Pipelines the CPU/memory limits
+select the *closest-match* machine, so `config.component_resources` maps the machine type → `(cpu, mem)`
+(`e2-standard-2`→`("2","8G")`, ×4/×8; raises `ValueError` on an unknown type — fail loud, no silent
+fallback) and `pipeline._size` applies `set_cpu_limit`/`set_memory_limit` to the **custom** component
+pods only. **GCPC ops (importer/model-upload/endpoint-create/model-deploy) are deliberately left
+unsized** — they run in Google-managed images. Reviews-as-gates ([[sdd-reviews-as-gates]]): spec
+reviewer ✅ + code-quality reviewer ✅ Approved (only minors; reviewer confirmed against GEAP docs that
+cpu/mem limits → closest machine type). Offline gate 175 passed. Live machine-size effect first
+observed in P2.7.
 
 **P2.4 design notes (2026-06-26):** `score_and_track` now emits `Output[Metrics]` (per-backend MAE /
 RMSE scalars, via `metrics.log_metric`) shown on the task in the Vertex Pipelines UI — in addition to
