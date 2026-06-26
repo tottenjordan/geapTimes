@@ -244,6 +244,62 @@ def run_backend_step(  # noqa: PLR0913 - cfg + name + injected seams (offline-te
     return BackendResult(record=record, predictions=predictions)
 
 
+def _served_run_params(cfg: "ExperimentConfig", model_name: str) -> dict[str, Any]:
+    """Params logged for a served (cloud-inference) backend run, with no in-process forecaster."""
+    return {
+        "model": model_name,
+        "backend": "timesfm-served",
+        "horizon": cfg.forecast.horizon,
+        "target": cfg.data.target_column,
+        "top_n": cfg.data.station_filter.top_n,
+    }
+
+
+def score_and_track_step(  # noqa: PLR0913 - cfg + name + frame + injected seams (offline-testable)
+    cfg: "ExperimentConfig",
+    model_name: str,
+    predictions: "pd.DataFrame",
+    *,
+    actuals_loader: "Callable[[ExperimentConfig], pd.DataFrame] | None" = None,
+    tracker: "ExperimentTracker | None" = None,
+    now: "Callable[[], datetime] | None" = None,
+) -> BackendResult:
+    """Score externally-produced predictions (e.g. served TimesFM) against the TEST actuals.
+
+    Mirrors ``run_backend_step`` for backends whose predictions come from cloud inference rather
+    than an in-process ``Forecaster``, so the served path produces the same metrics +
+    ``ExperimentRun`` + artifacts and feeds the comparison identically.
+    """
+    clock = now or _utc_now
+    load_actuals = actuals_loader or _default_actuals_loader
+    data = cfg.data
+    run_name = _safe_run_name(f"{model_name}-served-{clock().strftime('%Y%m%d-%H%M%S')}")
+    actuals = load_actuals(cfg)
+    metrics = point_metrics(
+        predictions,
+        actuals,
+        series_col=data.series_column,
+        time_col=data.time_column,
+        target_col=data.target_column,
+    )
+    logger.info("scoring served backend %s as %s", model_name, run_name)
+    artifact_uri = ""
+    if tracker is not None:
+        with tracker.run(run_name):
+            tracker.log_params(_served_run_params(cfg, model_name))
+            tracker.log_metrics(metrics)
+            artifact_uri = tracker.log_artifacts(run_name, config=cfg, predictions=predictions)
+    record = RunRecord(
+        run_name=run_name,
+        model=model_name,
+        overrides={},
+        metrics=metrics,
+        metadata={"served": True},
+        artifact_uri=artifact_uri,
+    )
+    return BackendResult(record=record, predictions=predictions)
+
+
 def register_timesfm_step(
     cfg: "ExperimentConfig",
     *,
@@ -296,8 +352,15 @@ def deploy_endpoint_step(
     aip = aiplatform or _lazy_aiplatform()
     _aip_init(aip, cfg)
     serving = cfg.pipeline.serving
+    # Create the endpoint with our display name + labels first, so the transient-teardown step can
+    # find it by display name (the ExitHandler exit task only has config, not this resource name).
+    endpoint = aip.Endpoint.create(
+        display_name=timesfm_endpoint_display_name(cfg),
+        labels=resource_labels(),
+    )
     model = aip.Model(model_resource_name)
-    endpoint = model.deploy(
+    model.deploy(
+        endpoint=endpoint,
         deployed_model_display_name=timesfm_endpoint_display_name(cfg),
         machine_type=serving.machine_type,
         min_replica_count=serving.min_replica_count,
@@ -388,22 +451,31 @@ def _default_predictions_reader(job: Any) -> list[dict[str, Any]]:  # noqa: ANN4
     raise NotImplementedError(msg)
 
 
-def teardown_endpoint_step(
+def teardown_serving_step(
     cfg: "ExperimentConfig",
-    endpoint_resource_name: str,
     *,
-    model_resource_name: str | None = None,
+    delete_model: bool = True,
     aiplatform: Any = None,  # noqa: ANN401 - external SDK module, injected for tests
 ) -> None:
-    """Undeploy + delete the endpoint (and optionally the model) to stop hosting charges."""
+    """Undeploy + delete the TimesFM endpoint(s) and model(s), resolved by display name.
+
+    This is the transient-teardown step run as the pipeline's ``dsl.ExitHandler`` exit task, so it
+    must work from config alone (the exit task can't reference the endpoint resource name produced
+    inside the handler). It is best-effort and idempotent: if nothing matches (batch mode, TimesFM
+    disabled, or already torn down) it is a no-op, so it is safe to always run on pipeline exit.
+    """
     aip = aiplatform or _lazy_aiplatform()
     _aip_init(aip, cfg)
-    endpoint = aip.Endpoint(endpoint_resource_name)
-    logger.info("tearing down TimesFM endpoint %s", endpoint_resource_name)
-    endpoint.undeploy_all()
-    endpoint.delete()
-    if model_resource_name is not None:
-        aip.Model(model_resource_name).delete()
+    endpoint_name = timesfm_endpoint_display_name(cfg)
+    for endpoint in aip.Endpoint.list(filter=f'display_name="{endpoint_name}"'):
+        logger.info("tearing down TimesFM endpoint %s", endpoint.resource_name)
+        endpoint.undeploy_all()
+        endpoint.delete()
+    if delete_model:
+        model_name = timesfm_model_display_name(cfg)
+        for model in aip.Model.list(filter=f'display_name="{model_name}"'):
+            logger.info("deleting TimesFM model %s", model.resource_name)
+            model.delete()
 
 
 @dataclass

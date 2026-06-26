@@ -194,9 +194,9 @@ class _FakeModel:
         self.batch_kwargs: dict | None = None
         self.deleted = False
 
-    def deploy(self, **kw: object) -> "_FakeEndpoint":
+    def deploy(self, **kw: object) -> object:
         self.deployed = kw
-        return _FakeEndpoint()
+        return kw.get("endpoint")
 
     def batch_predict(self, **kw: object) -> str:
         self.batch_kwargs = kw
@@ -209,6 +209,7 @@ class _FakeModel:
 class _FakeEndpoint:
     def __init__(self, resource_name: str = "projects/x/endpoints/e") -> None:
         self.resource_name = resource_name
+        self.display_name = ""
         self.undeployed = False
         self.deleted = False
         self.predict_instances: list | None = None
@@ -238,9 +239,12 @@ class _FakeEndpoint:
 
 
 class _FakeAip:
-    def __init__(self) -> None:
+    def __init__(self) -> None:  # noqa: C901 - nested fake SDK classes mirror the aiplatform API
         self.init_kwargs: dict | None = None
         self.upload_kwargs: dict | None = None
+        self.create_kwargs: dict | None = None
+        self.endpoint_list_filter: str | None = None
+        self.model_list_filter: str | None = None
         self.model = _FakeModel()
         self.endpoint = _FakeEndpoint()
         outer = self
@@ -249,7 +253,7 @@ class _FakeAip:
             def __init__(self, resource_name: str) -> None:
                 self.resource_name = resource_name
 
-            def deploy(self, **kw: object) -> _FakeEndpoint:
+            def deploy(self, **kw: object) -> object:
                 return outer.model.deploy(**kw)
 
             def batch_predict(self, **kw: object) -> str:
@@ -263,6 +267,11 @@ class _FakeAip:
                 outer.upload_kwargs = kw
                 return outer.model
 
+            @staticmethod
+            def list(*, filter: str) -> list[_FakeModel]:  # noqa: A002 - mirrors aiplatform API
+                outer.model_list_filter = filter
+                return [outer.model]
+
         class Endpoint:
             def __init__(self, resource_name: str) -> None:
                 outer.endpoint.resource_name = resource_name
@@ -275,6 +284,17 @@ class _FakeAip:
 
             def delete(self) -> None:
                 outer.endpoint.delete()
+
+            @staticmethod
+            def create(**kw: object) -> _FakeEndpoint:
+                outer.create_kwargs = kw
+                outer.endpoint.display_name = str(kw.get("display_name", ""))
+                return outer.endpoint
+
+            @staticmethod
+            def list(*, filter: str) -> list[_FakeEndpoint]:  # noqa: A002 - mirrors aiplatform API
+                outer.endpoint_list_filter = filter
+                return [outer.endpoint]
 
         self.Model = Model
         self.Endpoint = Endpoint
@@ -301,8 +321,14 @@ def test_deploy_endpoint_step() -> None:
     aip = _FakeAip()
     name = steps.deploy_endpoint_step(_cfg(), "projects/x/models/m", aiplatform=aip)
     assert name == "projects/x/endpoints/e"
+    # endpoint created with our display name + labels (so teardown can find it later)
+    create = aip.create_kwargs
+    assert create is not None
+    assert create["display_name"] == "timesfm-endpoint__top25_h3_t14_v14"
+    assert create["labels"] == {"solution": "geaptimes"}
     deployed = aip.model.deployed
     assert deployed is not None
+    assert deployed["endpoint"] is aip.endpoint
     assert deployed["machine_type"] == "n1-standard-4"
     assert deployed["traffic_percentage"] == 100
 
@@ -354,14 +380,46 @@ def test_batch_predict_timesfm_step_builds_frame() -> None:
     assert batch_kwargs["predictions_format"] == "jsonl"
 
 
-def test_teardown_endpoint_step_deletes_endpoint_and_model() -> None:
+def test_teardown_serving_step_tears_down_by_display_name() -> None:
     aip = _FakeAip()
-    steps.teardown_endpoint_step(
-        _cfg(), "projects/x/endpoints/e", model_resource_name="projects/x/models/m", aiplatform=aip
-    )
+    steps.teardown_serving_step(_cfg(), aiplatform=aip)
     assert aip.endpoint.undeployed is True
     assert aip.endpoint.deleted is True
     assert aip.model.deleted is True
+    assert aip.endpoint_list_filter == 'display_name="timesfm-endpoint__top25_h3_t14_v14"'
+    assert aip.model_list_filter == 'display_name="timesfm__top25_h3_t14_v14"'
+
+
+def test_teardown_serving_step_can_keep_model() -> None:
+    aip = _FakeAip()
+    steps.teardown_serving_step(_cfg(), delete_model=False, aiplatform=aip)
+    assert aip.endpoint.deleted is True
+    assert aip.model.deleted is False
+    assert aip.model_list_filter is None  # never listed models
+
+
+# -- score_and_track (served-backend path) --------------------------------------------------------
+def test_score_and_track_step_scores_and_tracks() -> None:
+    cfg = _cfg()
+    aip = _TrackingAip()
+    writes: list[tuple[str, str]] = []
+    tracker = ExperimentTracker(
+        cfg, aiplatform=aip, artifact_sink=lambda uri, text: writes.append((uri, text))
+    )
+    out = steps.score_and_track_step(
+        cfg,
+        "timesfm",
+        _predictions_frame(),
+        actuals_loader=lambda _c: _actuals_frame(),
+        tracker=tracker,
+        now=lambda: datetime(2018, 3, 18, 12, 0, 0),  # noqa: DTZ001 - fixed clock for test
+    )
+    assert out.record.model == "timesfm"
+    assert out.record.metadata["served"] is True
+    assert out.record.metrics["n_points"] == HORIZON
+    assert out.record.artifact_uri.startswith("gs://b/experiments/")
+    assert aip.params[0]["backend"] == "timesfm-served"
+    assert len(writes) == 2  # config.json + predictions.csv
 
 
 # -- compare --------------------------------------------------------------------------------------

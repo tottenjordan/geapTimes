@@ -1,0 +1,151 @@
+"""Offline tests for the KFP component *shells* via their underlying ``python_func``.
+
+The components run in a container in a live pipeline, but their wrapped Python function can be
+called directly with the step seams monkeypatched — exercising the shell wiring (config rebuild,
+delegation to ``steps``, Parquet artifact writes, the returned metrics dict) without KFP or cloud.
+"""
+
+import json
+from pathlib import Path
+from typing import Any
+
+import pandas as pd
+import pytest
+
+from geaptimes.experiment.runner import RunRecord
+from geaptimes.models.base import PREDICTION_COLUMNS
+from geaptimes.pipelines import steps
+from geaptimes.pipelines.components import build_components
+from geaptimes.pipelines.steps import BackendResult
+from geaptimes.schemas import ExperimentConfig
+
+COMPS = build_components("img:latest")
+
+CFG = ExperimentConfig.model_validate(
+    {
+        "project": {"id": "p", "gcs_bucket": "b", "bq_dataset": "ds", "region": "us-central1"},
+        "forecast": {"horizon": 2},
+        "models": [
+            {"name": "timesfm", "params": {"type": "timesfm"}},
+            {"name": "bqml_arima_xreg", "params": {"type": "bqml"}},
+        ],
+        "execution": {"experiment_name": "exp"},
+    }
+)
+CFG_JSON = CFG.model_dump_json()
+
+
+class _FakeArtifact:
+    def __init__(self, path: str) -> None:
+        self.path = path
+
+
+class _FakeTracker:
+    def __init__(self, *_a: object, **_k: object) -> None:
+        pass
+
+
+def _predictions() -> pd.DataFrame:
+    rows = [
+        {
+            "series": "s0",
+            "date": (pd.Timestamp("2018-03-18") + pd.Timedelta(days=s)).date(),
+            "horizon_step": s + 1,
+            "forecast": 10.0 + s,
+            "q10": 9.0,
+            "q30": 9.5,
+            "q50": 10.0,
+            "q70": 10.5,
+            "q90": 11.0,
+            "model": "m",
+        }
+        for s in range(2)
+    ]
+    return pd.DataFrame(rows, columns=PREDICTION_COLUMNS)
+
+
+def _backend_result(model: str) -> BackendResult:
+    record = RunRecord(
+        run_name="r", model=model, overrides={}, metrics={"mae": 1.5, "rmse": 2.5, "n_points": 2}
+    )
+    return BackendResult(record=record, predictions=_predictions())
+
+
+def test_build_tables_component(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(steps, "build_tables_step", lambda _cfg: {"infer": "p.ds.infer__x"})
+    assert COMPS.build_tables.python_func(config_json=CFG_JSON) == "p.ds.infer__x"
+
+
+def test_run_backend_component(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    seen: dict[str, Any] = {}
+
+    def fake_run(_cfg: object, model_name: str, *, tracker: object) -> BackendResult:
+        seen["model_name"] = model_name
+        seen["tracker"] = tracker
+        return _backend_result(model_name)
+
+    monkeypatch.setattr(steps, "run_backend_step", fake_run)
+    monkeypatch.setattr("geaptimes.experiment.tracking.ExperimentTracker", _FakeTracker)
+    art = _FakeArtifact(str(tmp_path / "preds.parquet"))
+    out = COMPS.run_backend.python_func(
+        config_json=CFG_JSON, model_name="bqml_arima_xreg", tables="t", predictions=art
+    )
+    assert out == {"model": "bqml_arima_xreg", "mae": 1.5, "rmse": 2.5}
+    assert seen["model_name"] == "bqml_arima_xreg"
+    assert isinstance(seen["tracker"], _FakeTracker)
+    assert len(pd.read_parquet(art.path)) == 2
+
+
+def test_register_and_deploy_components(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(steps, "register_timesfm_step", lambda _cfg: "projects/x/models/m")
+    monkeypatch.setattr(steps, "deploy_endpoint_step", lambda _cfg, name: f"ep-for-{name}")
+    assert COMPS.register_timesfm.python_func(config_json=CFG_JSON) == "projects/x/models/m"
+    deployed = COMPS.deploy_endpoint.python_func(config_json=CFG_JSON, model_resource_name="m")
+    assert deployed == "ep-for-m"
+
+
+def test_endpoint_predict_component(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(steps, "endpoint_predict_step", lambda _cfg, _name: _predictions())
+    monkeypatch.setattr(
+        steps, "score_and_track_step", lambda _cfg, name, _frame, **_k: _backend_result(name)
+    )
+    monkeypatch.setattr("geaptimes.experiment.tracking.ExperimentTracker", _FakeTracker)
+    art = _FakeArtifact(str(tmp_path / "tfm.parquet"))
+    out = COMPS.endpoint_predict.python_func(
+        config_json=CFG_JSON, endpoint_resource_name="ep", predictions=art
+    )
+    assert out == {"model": "timesfm", "mae": 1.5, "rmse": 2.5}
+    assert len(pd.read_parquet(art.path)) == 2
+
+
+def test_batch_predict_component(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(steps, "batch_predict_timesfm_step", lambda _cfg, _name: _predictions())
+    monkeypatch.setattr(
+        steps, "score_and_track_step", lambda _cfg, name, _frame, **_k: _backend_result(name)
+    )
+    monkeypatch.setattr("geaptimes.experiment.tracking.ExperimentTracker", _FakeTracker)
+    art = _FakeArtifact(str(tmp_path / "tfm.parquet"))
+    out = COMPS.batch_predict.python_func(
+        config_json=CFG_JSON, model_resource_name="m", predictions=art
+    )
+    assert out == {"model": "timesfm", "mae": 1.5, "rmse": 2.5}
+
+
+def test_teardown_serving_component(monkeypatch: pytest.MonkeyPatch) -> None:
+    called: list[object] = []
+    monkeypatch.setattr(steps, "teardown_serving_step", called.append)
+    COMPS.teardown_serving.python_func(config_json=CFG_JSON)
+    assert len(called) == 1
+
+
+def test_compare_backends_component(tmp_path: Path) -> None:
+    art = _FakeArtifact(str(tmp_path / "comparison.json"))
+    rows = [
+        {"model": "timesfm", "mae": 80.0, "rmse": 110.0},
+        {"model": "bqml_arima_xreg", "mae": 77.0, "rmse": 101.0},
+    ]
+    winner = COMPS.compare_backends.python_func(rows=rows, comparison=art)
+    assert winner == "bqml_arima_xreg"
+    saved = json.loads(Path(art.path).read_text(encoding="utf-8"))
+    assert saved["winner"] == "bqml_arima_xreg"
+    assert [r["model"] for r in saved["ranking"]] == ["bqml_arima_xreg", "timesfm"]
