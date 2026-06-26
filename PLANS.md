@@ -53,7 +53,7 @@ evaluation + the polished CLI remain in Stage 5.
 | 4.3 | `pipelines/serving/{predictor,app}.py` — TimesFM serving predictor + Vertex-contract web app | done | `78ca456` |
 | 4.4 | `models/automl.py` — finish predict path (`_read_predictions` output read + `_flatten_automl_output`) | done | `5f0323b` |
 | 4.5 | `pipelines/{config,steps}.py` — pure pipeline helpers + injected-seam step functions | done | `a429bdb` |
-| 4.6 | `pipelines/{components,pipeline,compile}.py` — KFP components + comparison DAG + compile; add `kfp` | pending | — |
+| 4.6 | `pipelines/{components,pipeline,compile}.py` — KFP components + comparison DAG + compile; add `kfp` | done | `82cafda` |
 | 4.7 | `pipelines/container/{Dockerfile,cloudbuild.yaml}` + `setup_gcp.py` AR repo + `requirements.txt` | pending | — |
 | 4.8 | `pipelines/submit.py` — submit `PipelineJob` + `--enable-automl` override | pending | — |
 | 4.9 | Live comparison run on `hybrid-vertex` (TimesFM + BQML + AutoML floor) + notes | pending | — |
@@ -85,9 +85,24 @@ functions (build tables, per-backend run via `ForecastFactory`+`point_metrics`+`
 register/deploy/undeploy/endpoint-predict/batch-predict, compare→winner) with injected seams.
 
 ### 4.6 KFP components + DAG + compile
-`@dsl.component` shells over the steps (cfg reconstructed from a JSON param); `@dsl.pipeline` with
-`dsl.Condition` on serving mode + `keep_deployed` and a `dsl.ExitHandler` around serve+teardown;
-`compile_pipeline()` (pure). Compile-to-YAML graph test. Adds `kfp>=2,<3`.
+`@dsl.component` shells over the steps (cfg reconstructed from a JSON param); `@dsl.pipeline`
+assembling build_tables → {bqml, automl in-process; timesfm served (endpoint|batch)} → compare;
+`compile_pipeline()` (pure). Compile-to-YAML graph test (4 configs). Adds `kfp==2.16.1`.
+
+**Refinements vs the approved plan (sound engineering calls, recorded):**
+- *Branch at compile time, not via `dsl.Condition`.* Which backends run, the serving `mode`, and
+  whether to tear down are read from the typed config when `build_pipeline(cfg)` runs — we compile
+  per submit, so the cfg is known and the YAML shows exactly what executes (and is graph-testable).
+  The rich config still travels to component bodies as a runtime `config_json` param.
+- *`dsl.ExitHandler` wraps the **whole** body* (teardown as the exit task), not just serve+teardown:
+  KFP forbids a task outside a handler depending on one inside it, so `compare` (which needs the
+  served-TimesFM metrics) must sit inside the handler too. Teardown is config/display-name based and
+  idempotent (no-op when nothing is deployed), so always-on-exit is safe.
+- *steps.py additions* (same injected-seam discipline): `deploy_endpoint_step` now creates a
+  named+labelled endpoint so teardown can resolve it by display name; `teardown_endpoint_step`
+  (name-based) → `teardown_serving_step` (config-based, for the ExitHandler); new
+  `score_and_track_step` gives the served path the same metrics/`ExperimentRun`/artifacts as
+  in-process backends without an in-process `Forecaster`.
 
 ### 4.7 Container + Cloud Build
 One `geaptimes` runtime image (baked TimesFM checkpoint, serving CMD) + `cloudbuild.yaml` (push to
