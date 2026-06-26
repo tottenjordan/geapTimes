@@ -16,8 +16,8 @@ Status legend: `pending` · `in progress` · `done` · `blocked`
 | Stage | Title | Status |
 |-------|-------|--------|
 | 1 | Data Architecture & Config Schema | done |
-| 2 | Model Factory & Forecaster Abstractions | items done — STOP (awaiting approval) |
-| 3 | Experiment Tracking & DOE Framework | pending |
+| 2 | Model Factory & Forecaster Abstractions | done |
+| 3 | Experiment Tracking & DOE Framework | items done — STOP (awaiting approval) |
 | 4 | Managed Pipelines & Cloud Orchestration | pending |
 | 5 | Standardized Evaluation & Entry Point | pending |
 
@@ -32,7 +32,85 @@ container (Model Garden → endpoint); side-by-side comparison DAG.
 
 ---
 
-## Tier 2 — Stage 2 (Model Factory & Forecaster Abstractions) — ACTIVE
+## Tier 2 — Stage 3 (Experiment Tracking & DOE Framework) — ACTIVE
+
+A config-driven **Design-of-Experiments** matrix expands one base config into a grid of variants;
+the **runner** drives the Stage 2 forecasters (their first live execution) and logs each run to
+Vertex AI **Experiments** with params, minimal point metrics (MAE/RMSE vs TEST actuals), and
+prediction/config **artifacts** in `gs://<bucket>/experiments/<name>/<run>/`. The Vertex/GCS seam
+and forecaster/actuals loaders are injected, so the whole harness unit-tests offline; the live run
+is a separate, explicit step. TimesFM + BQML run live on `hybrid-vertex`; AutoML is a first-class
+backend in the runner but stays `enabled: false` (run when explicitly budgeted). Full standardized
+evaluation (MAPE, quantile loss, comparison report) is deferred to Stage 5.
+
+| # | Item | Status | Commit |
+|---|------|--------|--------|
+| 3.1 | `schemas.py` + `base_config.yaml` — `doe:` block + `AutoMLParams.budget_milli_node_hours` | done | `e070977` |
+| 3.2 | `experiment/doe.py` — DOE matrix engine (`expand`, `DOEPoint`, `point_slug`) | done | `e57eabf` |
+| 3.3 | `experiment/metrics.py` — minimal point metrics (MAE/RMSE) | done | `e093194` |
+| 3.4 | `experiment/tracking.py` — Vertex Experiments + GCS artifacts (injected seam) | done | `4b86489` |
+| 3.5 | `experiment/runner.py` — `run_experiment` orchestration + `RunRecord` | done | `e0ba7dc` |
+| 3.6 | `models/automl.py` — wire `budget_milli_node_hours` into `run_kwargs` | done | `14b22d4` |
+| 3.x | `models/bqml.py` — fix: label model via BigQuery API (CREATE MODEL rejects label OPTIONS) | done | `6f3eef7` |
+| 3.7 | Demo — `03_experiment_tracking.ipynb` | done | `42f8078` |
+| 3.8 | Live run on `hybrid-vertex` (TimesFM + BQML) + notes | done | `8d29e19` |
+
+### 3.1 Schema + config
+`DOEConfig(axes: dict[str, list])` + `ExperimentConfig.doe`; `AutoMLParams.budget_milli_node_hours`
+(default 1000, validator `> 0`). `base_config.yaml` gets an empty `doe.axes` (commented sweep
+example) and the AutoML budget.
+
+### 3.2 `experiment/doe.py`
+`expand(cfg)` cross-products `cfg.doe.axes` into re-validated `ExperimentConfig` variants
+(deep-copy via `model_dump` + dotted-path override + `model_validate`); empty axes ⇒ one `base`
+point; base cfg never mutated. `point_slug(overrides)` names runs.
+
+### 3.3 `experiment/metrics.py`
+`point_metrics(predictions, actuals, …)` inner-joins on (series, date) → `{mae, rmse, n_points}`;
+raises on empty overlap. Full eval suite is Stage 5.
+
+### 3.4 `experiment/tracking.py`
+`ExperimentTracker` wraps `aiplatform` (`init`/`start_run`/`log_params`/`log_metrics`/`end_run`)
+with a `run(run_name)` context manager; artifacts (resolved config JSON + predictions CSV) written
+to `gs://<bucket>/experiments/<exp>/<run>/` via an injected sink (default GCS `storage.Client`).
+Fully offline-testable with a fake aiplatform + list sink.
+
+### 3.5 `experiment/runner.py`
+`run_experiment(cfg, *, tracker, forecasters, actuals_loader, now)` → for each `DOEPoint` ×
+enabled forecaster: `fit()` → `predict()` → metrics vs TEST actuals → log params/metrics/artifacts;
+returns `RunRecord`s. All cloud seams injected for offline tests; default actuals loader reads
+prepped TEST rows.
+
+### 3.6 AutoML budget
+`run_kwargs()` gains `budget_milli_node_hours` from `AutoMLParams`; backend remains default-off.
+
+### 3.7 Demo
+`data_notebooks/03_experiment_tracking.ipynb`: `run_experiment` → `RunRecord` table + forecast-vs-
+TEST plot with q10–q90 band; `geaptimes` kernel pinned; first executed in 3.8.
+
+### 3.8 Live run + notes
+Built train/infer tables (Stage 2.2 builders); ran TimesFM + BQML live on `hybrid-vertex` under
+experiment `citibike-daily-baseline`. Backtest over the 14-day TEST window (25 series, 308 points):
+**TimesFM** MAE 85.51 / RMSE 113.65; **BQML ARIMA_PLUS_XREG** MAE 77.72 / RMSE 101.72. One Vertex
+`ExperimentRun` per model with params + metrics; artifacts (config.json + predictions.csv) under
+`gs://geaptimes-hybrid-vertex/experiments/citibike-daily-baseline/<run>/`; BQML model labelled
+`solution=geaptimes`. Two findings recorded in `docs/notes/stage-3-experiment-tracking-live-run.md`:
+(a) **Stage 2 bug fixed** — BQML `CREATE MODEL` can't carry resource labels in OPTIONS, so the model
+is labelled via the BigQuery API post-create (`6f3eef7`); (b) a workstation pyOpenSSL/urllib3 quirk
+breaks the Python GCS upload, mitigated in the run harness with a `gcloud storage cp` artifact sink
+(package default sink unchanged).
+
+### Stage 3 verification
+- **Offline** (gating): `uv run ruff check .` → `uv run ruff format --check .` →
+  `uv run ty check` → `uv run pytest`; then `expand(base_config)` lists the grid with no cloud calls.
+- **Live** (manual, auth): build train/infer, run TimesFM + BQML, confirm `ExperimentRun`s +
+  artifacts, record in `docs/notes/`.
+- **STOP** checkpoint: present the DOE engine, tracking wrapper, runner, metrics, AutoML budget
+  wiring, and the live run results.
+
+---
+
+## Tier 2 — Stage 2 (Model Factory & Forecaster Abstractions) — COMPLETE
 
 All three backends are **code-complete but not executed** in Stage 2 (no model downloads, no BQ
 jobs, no Vertex spend); first live runs happen in Stage 3. Forecasters lazy-load / inject clients
