@@ -52,7 +52,7 @@ evaluation + the polished CLI remain in Stage 5.
 | 4.2 | `models/timesfm_core.py` — factor TimesFM core (`compile_timesfm`/`forecast_arrays`/`rows_from_forecast`); refactor `timesfm.py` | done | `c43836e` |
 | 4.3 | `pipelines/serving/{predictor,app}.py` — TimesFM serving predictor + Vertex-contract web app | done | `78ca456` |
 | 4.4 | `models/automl.py` — finish predict path (`_read_predictions` output read + `_flatten_automl_output`) | done | `5f0323b` |
-| 4.5 | `pipelines/{config,steps}.py` — pure pipeline helpers + injected-seam step functions | pending | — |
+| 4.5 | `pipelines/{config,steps}.py` — pure pipeline helpers + injected-seam step functions | done | `a429bdb` |
 | 4.6 | `pipelines/{components,pipeline,compile}.py` — KFP components + comparison DAG + compile; add `kfp` | pending | — |
 | 4.7 | `pipelines/container/{Dockerfile,cloudbuild.yaml}` + `setup_gcp.py` AR repo + `requirements.txt` | pending | — |
 | 4.8 | `pipelines/submit.py` — submit `PipelineJob` + `--enable-automl` override | pending | — |
