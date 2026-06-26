@@ -54,6 +54,18 @@ def timesfm_endpoint_display_name(cfg: "ExperimentConfig") -> str:
     return f"timesfm-endpoint__{config_slug(cfg.data, cfg.forecast)}"
 
 
+def timesfm_artifact_uri(cfg: "ExperimentConfig") -> str:
+    """GCS prefix recorded as the TimesFM model's ``artifact_uri``.
+
+    The checkpoint is baked into the serving image, so there are no external model artifacts — but
+    the GCPC ``importer`` node still requires a **non-empty** URI (an empty string fails at runtime
+    with "Failed to get the URI of the artifact to import"). Point it at a stable, empty prefix
+    under the project bucket; at deploy Vertex copies that prefix's (empty) contents to
+    ``AIP_STORAGE_URI``, which the serving container ignores because it loads the baked checkpoint.
+    """
+    return f"gs://{cfg.project.gcs_bucket}/serving/{timesfm_model_display_name(cfg)}/"
+
+
 def pipeline_job_display_name(cfg: "ExperimentConfig") -> str:
     """Display name for the comparison PipelineJob."""
     return f"geaptimes-comparison__{config_slug(cfg.data, cfg.forecast)}"

@@ -30,6 +30,7 @@ from geaptimes.pipelines.config import (
     image_uri,
     pipeline_root,
     resource_labels,
+    timesfm_artifact_uri,
     timesfm_container_spec,
     timesfm_endpoint_display_name,
     timesfm_model_display_name,
@@ -133,7 +134,9 @@ def build_pipeline(cfg: "ExperimentConfig") -> "BaseComponent":  # noqa: PLR0915
             # carrying the containerSpec (built by an importer node) rather than serving_container_*
             # args. project/location/display names are baked at compile time (compiled per submit).
             container_spec = importer(
-                artifact_uri="",  # checkpoint baked into the image; no GCS model artifacts
+                # Empty GCS prefix: checkpoint is baked into the image, but the importer node
+                # requires a non-empty URI (an empty string fails the import at runtime).
+                artifact_uri=timesfm_artifact_uri(cfg),
                 artifact_class=artifact_types.UnmanagedContainerModel,
                 metadata={"containerSpec": timesfm_container_spec(cfg)},
             )

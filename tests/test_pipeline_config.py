@@ -38,6 +38,14 @@ def test_resource_labels() -> None:
     assert pcfg.resource_labels() == {"solution": "geaptimes"}
 
 
+def test_timesfm_artifact_uri_is_non_empty_bucket_prefix() -> None:
+    # The GCPC importer rejects an empty artifact_uri; the checkpoint is baked, so this points at a
+    # stable (empty) GCS prefix under the project bucket rather than "".
+    uri = pcfg.timesfm_artifact_uri(_cfg())
+    assert uri == "gs://bkt/serving/timesfm__top25_h14_t14_v14/"
+    assert uri  # non-empty: the importer rejects ""
+
+
 def test_component_resources_maps_machine_type() -> None:
     # Default machine is now e2-standard-2 (right-sized supervisor pods, 4A.8).
     assert pcfg.component_resources(_cfg()) == ("2", "8G")
