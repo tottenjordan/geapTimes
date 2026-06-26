@@ -82,7 +82,9 @@ google-cloud-core==2.6.0
 google-cloud-resource-manager==1.18.0
     # via google-cloud-aiplatform
 google-cloud-storage==3.12.0
-    # via google-cloud-aiplatform
+    # via
+    #   geaptimes
+    #   google-cloud-aiplatform
 google-crc32c==1.8.0
     # via
     #   google-cloud-storage
