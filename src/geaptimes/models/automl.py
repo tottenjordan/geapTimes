@@ -94,6 +94,7 @@ class AutoMLForecaster(Forecaster):
             "unavailable_at_forecast_columns": list(covariates.unavailable_at_forecast_columns),
             "forecast_horizon": self.cfg.forecast.horizon,
             "context_window": self.params.context_window,
+            "budget_milli_node_hours": self.params.budget_milli_node_hours,
             "data_granularity_unit": _GRANULARITY_UNIT,
             "data_granularity_count": _GRANULARITY_COUNT,
             "predefined_split_column_name": _SPLIT_COLUMN,

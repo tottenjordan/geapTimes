@@ -81,6 +81,7 @@ def test_run_kwargs_maps_column_roles_and_settings() -> None:
     assert kw["unavailable_at_forecast_columns"] == UNAVAIL
     assert kw["forecast_horizon"] == 14
     assert kw["context_window"] == 28
+    assert kw["budget_milli_node_hours"] == 1000
     assert kw["data_granularity_unit"] == "day"
     assert kw["data_granularity_count"] == 1
     assert kw["predefined_split_column_name"] == "splits"
