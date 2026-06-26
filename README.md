@@ -2,7 +2,7 @@
 
 <h1 align="center">🚲 geapTimes ⌛</h1>
 
-> A modular factory framework for enterprise time-series forecasting with the **Gemini Enterprise Agent Platform** (GEAP, *fka Vertex AI*). The `ForecastFactory` creates model experiments for GEAP `AutoML`, Google Research's [TimesFM](https://research.google/blog/a-decoder-only-foundation-model-for-time-series-forecasting/), and BigQuery ML's `ARIMA+`.
+> A modular factory framework for enterprise time-series forecasting with the **Gemini Enterprise Agent Platform** (GEAP, *fka Vertex AI*)
 
 ![Python](https://img.shields.io/badge/Python-3.11-3776AB?logo=python&logoColor=white)
 ![uv](https://img.shields.io/badge/packaging-uv-DE5FE9?logo=uv&logoColor=white)
@@ -15,8 +15,7 @@
 
 </div>
 
-Forecasting logic is accessed through a **model factory** (AutoML, BQML `ARIMA_PLUS_XREG`, and
-TimesFM 2.5). Experiments are defined in **YAML** and validated into **Pydantic** config. Runs
+The `ForecastFactory` creates model experiments for GEAP's [AutoML](https://docs.cloud.google.com/gemini-enterprise-agent-platform/machine-learning/tabular-data/overview#forecasting), Google Research's [TimesFM](https://research.google/blog/a-decoder-only-foundation-model-for-time-series-forecasting/), and BigQuery ML's [ARIMA+ & ARIMA+XREG](https://docs.cloud.google.com/bigquery/docs/forecasting-overview). Experiments are defined in **YAML** and validated into **Pydantic** config. Runs
 are tracked as platform Experiments with a Design-of-Experiments (DOE) matrix.
 
 > Refactor of the notebook-based [`vertex-forecas-repo`](https://github.com/tottenjordan/vertex-forecas-repo)
