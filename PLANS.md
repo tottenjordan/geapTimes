@@ -180,6 +180,7 @@ Design principles (carried from Stage 4):
 | 4A.5 | Freshness override | `data.force_rebuild` config flag + `--force-data-rebuild` CLI so the guard can be bypassed on demand |
 | 4A.6 | Adopt GCPC serving ops | `ModelUploadOp`, `EndpointCreateOp`, `ModelDeployOp`, `ModelUndeployOp`/`EndpointDeleteOp` (+ optional `ModelBatchPredictOp`); emit `google.VertexModel`/`VertexEndpoint` artifacts w/ lineage; `uv add google-cloud-pipeline-components` (pin) — satisfies #5 + serving side of #3/#4 |
 | 4A.7 | Tests + docs + verification | compile-graph tests (new nodes/edges) + step unit tests (table-exists/metadata seams); record the GCPC adoption decision in `CODE_STANDARDS.md` + `CLAUDE.md`; offline gate; **cheap `--disable-automl` live test** of data step + artifacts + GCPC serving, then one full run |
+| 4A.8 | Right-size `component_machine_type` | drop the default from `e2-standard-4` → `e2-standard-2` (config + `schemas.py` default). The component pods are **supervisors** (esp. `run-backend:automl`, which blocks polling the managed AutoML `TrainingPipeline`), not compute; 4 vCPU sits ~idle. Smaller pod = lower cost, no latency cost. Consider a per-task override if any in-process step (BQML/TimesFM serving glue) ever needs more |
 
 **Notes / rationale:**
 - *Frozen data → the data step is almost always a no-op.* Stage 1 pinned the public window to
@@ -194,6 +195,12 @@ Design principles (carried from Stage 4):
 - *BigQuery DDL via `BigqueryQueryJobOp`?* Evaluated, **likely keep custom** — our builders carry the
   existence/fingerprint **skip** logic + offline tests that an opaque op can't; we can still emit a
   `google.BQTable` artifact from the custom component.
+- *Component pods are supervisors, not workers (4A.8).* Live introspection of the comparison run
+  (2026-06-26) showed the `run-backend:automl` component is a CustomJob on `e2-standard-4` that merely
+  launches the managed AutoML `TrainingPipeline` (a separate resource) and then **blocks polling it**
+  — so its CPU chart is flat by design, and the real trainer runs on Google-managed infra with no
+  user-visible node metrics. AutoML itself exposes no machine/parallelism knob (only `budget_milli_
+  node_hours`, already at the 1000 floor); the only addressable lever is shrinking the supervisor pod.
 
 **Out of scope (held):** the heavyweight AutoML tabular workflow
 (`get_automl_forecasting_pipeline_and_parameters`) — far costlier than our locked floor-budget single
