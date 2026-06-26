@@ -154,7 +154,15 @@ below, decided at the STOP checkpoint, so they land in one combined re-run.
 
 ### Stage 4 Addendum — Self-contained data prep, richer artifacts & GCPC (PROPOSED 2026-06-26)
 
-**Status: proposed; pending approval at the Stage 4 STOP checkpoint.** Make the comparison pipeline
+> **SUPERSEDED 2026-06-26 by the Stage 4 Redesign** (approved; snapshot
+> `docs/plans/005_stage-4-redesign-train-inference-split.md`). The first live run failed (AutoML read
+> bug, fixed `e8a0f5f`), exposing that `run_backend` welds fit+predict+score+track into one pod. The
+> redesign splits every backend into **train → infer → score** (trained model passed as an artifact;
+> failed infer re-uses the cached model) and rolls out **phased**: Phase 1 = the split (custom, no new
+> deps); Phase 2 = **hybrid** GCPC (serving lifecycle only) + the surviving 4A items (4A.1–4A.5, 4A.8).
+> The 4A.1–4A.8 items below are retained for reference but are now executed via the redesign phases.
+
+**Status: SUPERSEDED (see banner above).** Make the comparison pipeline
 **self-bootstrapping** (no out-of-band Stage 1 notebook prerequisite) and **lineage-rich**, and
 adopt **Google Cloud Pipeline Components (GCPC)** where they earn their keep. Folds feedback #3/#4/#5
 and the data-prep-as-first-step idea into one change set, verified in **one combined re-run**
@@ -206,6 +214,13 @@ Design principles (carried from Stage 4):
 (`get_automl_forecasting_pipeline_and_parameters`) — far costlier than our locked floor-budget single
 job; and `AutoMLForecastingTrainingJobRunOp` — modest benefit, fragments the AutoML logic (column
 specs + flatten + score + track) and our preflight already de-risks the raw SDK call.
+*(Note: the `AutoMLForecastingTrainingJobRunOp` stance is being revisited in the Stage 4 redesign
+discussion — train/inference split makes GCPC ops fit; see below.)*
+
+**Backlog — `dsl.ParallelFor` (deferred 2026-06-26):** not for the cross-service axis (backends
+already run in parallel; their chains are heterogeneous; conflicts with compile-time branch
+resolution). Reserve for a homogeneous inner axis (DOE/HP variants, backtest windows). Full
+rationale: `docs/notes/pipeline-parallelfor-deferred.md`.
 
 ---
 
