@@ -142,14 +142,63 @@ in-flight run (improvements show up on the next deploy):
 |---|----------|-------------|
 | 1 | Improve pipeline step names | **done now** — explicit `set_display_name` per task (`run-backend:<model>`, `build-tables`, …); compile test asserts them |
 | 2 | Make quantiles optional (force `minimize-quantile-loss` + adjust metrics only when enabled) | **deferred → Stage 5**, documented in `CODE_STANDARDS.md` (Deferred / backlog) |
-| 3 | Output artifacts for register-timesfm (model + markdown metadata summary) | **Stage 4 addendum** (decide with #5; GCPC ops emit these natively) |
-| 4 | Output artifacts for build-tables / run-backend / compare / deploy-endpoint | **Stage 4 addendum** (decide with #5) |
-| 5 | Adopt Google Cloud Pipeline Components where beneficial (esp. serving lifecycle) | **Stage 4 addendum** — proposal: adopt GCPC for serving infra (`ModelUploadOp`, `EndpointCreateOp`, `ModelDeployOp`, `ModelUndeployOp`/`EndpointDeleteOp`, optional `ModelBatchPredictOp`); keep custom components for logic+tracker steps; do **not** adopt the heavyweight AutoML tabular workflow |
+| 3 | Output artifacts for register-timesfm (model + markdown metadata summary) | **Stage 4 addendum** 4A.4/4A.6 (GCPC ops emit these natively) |
+| 4 | Output artifacts for build-tables / run-backend / compare / deploy-endpoint | **Stage 4 addendum** 4A.2/4A.4 |
+| 5 | Adopt Google Cloud Pipeline Components where beneficial (esp. serving lifecycle) | **Stage 4 addendum** 4A.6 — adopt GCPC for serving infra; keep custom components for logic+tracker steps; do **not** adopt the heavyweight AutoML tabular workflow |
+| — | Data-prep as first pipeline step (create source/prepped if absent; outputs as artifacts) | **Stage 4 addendum** 4A.1/4A.3 (existence+fingerprint guard; self-bootstrapping pipeline) |
 | 6 | Reuse an existing similar TimesFM deployment | **deferred → Stage 5** (coupled to warm/`keep_deployed` endpoints); design + LOE in `docs/notes/timesfm-endpoint-reuse-design.md` |
 
-Items #3/#4/#5 are coupled (GCPC serving ops deliver much of #3/#4's standardized artifacts +
-lineage for free) and will be folded into a **Stage 4 addendum** decided at the STOP checkpoint, so
-they land in one combined re-run.
+Items #3/#4/#5 (plus the data-prep-step idea below) are coupled (GCPC serving ops deliver much of
+#3/#4's standardized artifacts + lineage for free) and are folded into the **Stage 4 addendum**
+below, decided at the STOP checkpoint, so they land in one combined re-run.
+
+### Stage 4 Addendum — Self-contained data prep, richer artifacts & GCPC (PROPOSED 2026-06-26)
+
+**Status: proposed; pending approval at the Stage 4 STOP checkpoint.** Make the comparison pipeline
+**self-bootstrapping** (no out-of-band Stage 1 notebook prerequisite) and **lineage-rich**, and
+adopt **Google Cloud Pipeline Components (GCPC)** where they earn their keep. Folds feedback #3/#4/#5
+and the data-prep-as-first-step idea into one change set, verified in **one combined re-run**
+(iterate cheaply with `--disable-automl`; one full three-backend run to close). Archive an immutable
+snapshot to `docs/plans/005_*.md` on approval.
+
+Design principles (carried from Stage 4):
+- **Keep custom `@dsl.component` shells** for steps with real logic + injected-seam offline tests +
+  `ExperimentTracker` integration (data prep, build-tables, run-backend, served scoring, compare).
+- **Adopt GCPC only for opaque managed-resource infra** (serving lifecycle) where it adds
+  standardized `google.Vertex*` artifacts + ML-Metadata lineage + billing-label propagation and
+  removes code we'd otherwise hand-roll. GCPC ops are opaque → test DAG wiring via compile, not
+  internals.
+- **Table artifacts are *references***, not copied bytes: a `dsl.Dataset` (or `google.BQTable`) with
+  URI `bq://project.ds.table` and `.metadata` = {table id, `config_fingerprint`, row count}.
+
+| # | Item | Notes |
+|---|------|-------|
+| 4A.1 | `ensure_source` → `ensure_prepped` steps at the front of the DAG | existence + `config_fingerprint` guard (skip when present & current); `CREATE OR REPLACE` only when missing/stale; injected `table_exists`/`table_metadata` seams for offline tests |
+| 4A.2 | Table-reference artifacts | `ensure_source`/`ensure_prepped`/`build_tables` emit `Dataset` artifacts (`bq://…` + fingerprint + row count) — satisfies the data side of #4 |
+| 4A.3 | Wire `prepped` artifact into consumers | `build_tables` **and** the TimesFM endpoint/batch steps take `prepped` as an explicit input — fixes the serving branch's current *implicit* (edge-less) dependency on prepped existing |
+| 4A.4 | Results artifacts | `run_backend`/served → `Output[Metrics]` (MAE/RMSE scalars in console) + ExperimentRun name in metadata; `compare` → `Output[Markdown]` ranking; (serving model/endpoint artifacts come free from 4A.6) — satisfies #3 + results side of #4 |
+| 4A.5 | Freshness override | `data.force_rebuild` config flag + `--force-data-rebuild` CLI so the guard can be bypassed on demand |
+| 4A.6 | Adopt GCPC serving ops | `ModelUploadOp`, `EndpointCreateOp`, `ModelDeployOp`, `ModelUndeployOp`/`EndpointDeleteOp` (+ optional `ModelBatchPredictOp`); emit `google.VertexModel`/`VertexEndpoint` artifacts w/ lineage; `uv add google-cloud-pipeline-components` (pin) — satisfies #5 + serving side of #3/#4 |
+| 4A.7 | Tests + docs + verification | compile-graph tests (new nodes/edges) + step unit tests (table-exists/metadata seams); record the GCPC adoption decision in `CODE_STANDARDS.md` + `CLAUDE.md`; offline gate; **cheap `--disable-automl` live test** of data step + artifacts + GCPC serving, then one full run |
+
+**Notes / rationale:**
+- *Frozen data → the data step is almost always a no-op.* Stage 1 pinned the public window to
+  2018-05-31, so `source`/`prepped` are effectively static; the guard makes the common case a fast
+  existence check. The value is reproducibility / fresh-project bootstrap, not per-run compute
+  (a naive `CREATE OR REPLACE` would re-bill the ~4.4 GB source every run — explicitly avoided).
+- *Two steps, not one* (`source` → `prepped`): `source` changes ~never while `prepped` changes with
+  covariate/split config, so independent caching + cleaner lineage (source → prepped → {train,
+  infer, timesfm}).
+- *Coupling of #3/#4 with #5:* serving-step artifacts (model, endpoint) are delivered by the GCPC
+  ops in 4A.6, so 4A.4 only hand-rolls artifacts for the **custom-kept** steps.
+- *BigQuery DDL via `BigqueryQueryJobOp`?* Evaluated, **likely keep custom** — our builders carry the
+  existence/fingerprint **skip** logic + offline tests that an opaque op can't; we can still emit a
+  `google.BQTable` artifact from the custom component.
+
+**Out of scope (held):** the heavyweight AutoML tabular workflow
+(`get_automl_forecasting_pipeline_and_parameters`) — far costlier than our locked floor-budget single
+job; and `AutoMLForecastingTrainingJobRunOp` — modest benefit, fragments the AutoML logic (column
+specs + flatten + score + track) and our preflight already de-risks the raw SDK call.
 
 ---
 
