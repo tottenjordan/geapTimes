@@ -80,6 +80,14 @@ class _FakeDatasetArtifact:
         self.metadata: dict[str, Any] = {}
 
 
+class _FakeMetrics:
+    def __init__(self) -> None:
+        self.scalars: dict[str, float] = {}
+
+    def log_metric(self, name: str, value: float) -> None:
+        self.scalars[name] = value
+
+
 def test_ensure_source_component(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(steps, "ensure_source_step", lambda _cfg: steps.TableRef("p.ds.src__x", 44))
     source = _FakeDatasetArtifact()
@@ -178,9 +186,12 @@ def test_score_and_track_component(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
     monkeypatch.setattr("geaptimes.experiment.tracking.ExperimentTracker", _FakeTracker)
     art = _FakeArtifact(str(tmp_path / "preds.parquet"))
     _predictions().to_parquet(art.path, index=False)  # infer step's artifact, read back here
+    metrics = _FakeMetrics()
     out = COMPS.score_and_track.python_func(
-        config_json=CFG_JSON, model_name="bqml_arima_xreg", predictions=art
+        config_json=CFG_JSON, model_name="bqml_arima_xreg", predictions=art, metrics=metrics
     )
+    # MAE/RMSE are logged as scalar Metrics for the Vertex Pipelines UI (4A.4 richer artifacts).
+    assert metrics.scalars == {"mae": 1.5, "rmse": 2.5}
     # Substitution-safe contract: score_and_track outputs are collected into compare_backends'
     # ``rows`` list, which KFP builds by *textual* substitution into the executor-input JSON. The
     # output must therefore contain no character (``"`` ``,`` ``]``) that could break that JSON --
@@ -245,14 +256,21 @@ def test_teardown_serving_component(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_compare_backends_component(tmp_path: Path) -> None:
     art = _FakeArtifact(str(tmp_path / "comparison.json"))
+    md = _FakeArtifact(str(tmp_path / "ranking.md"))
     rows = [
         base64.b64encode(json.dumps({"model": "timesfm", "mae": 80.0, "rmse": 110.0}).encode()),
         base64.b64encode(
             json.dumps({"model": "bqml_arima_xreg", "mae": 77.0, "rmse": 101.0}).encode()
         ),
     ]
-    winner = COMPS.compare_backends.python_func(rows=rows, comparison=art)
+    winner = COMPS.compare_backends.python_func(rows=rows, comparison=art, ranking_md=md)
     assert winner == "bqml_arima_xreg"
     saved = json.loads(Path(art.path).read_text(encoding="utf-8"))
     assert saved["winner"] == "bqml_arima_xreg"
     assert [r["model"] for r in saved["ranking"]] == ["bqml_arima_xreg", "timesfm"]
+    # The Markdown ranking artifact (4A.4): a table with the winner flagged, lowest RMSE first.
+    md_text = Path(md.path).read_text(encoding="utf-8")
+    assert "| rank | model | mae | rmse |" in md_text
+    assert "bqml_arima_xreg (winner)" in md_text
+    body = [line for line in md_text.splitlines() if line.startswith("| 1 ")]
+    assert "bqml_arima_xreg" in body[0]

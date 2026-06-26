@@ -196,6 +196,20 @@ def test_table_artifacts_wire_data_lineage_into_every_backend(tmp_path: Path) ->
     assert "model-deploy" in tasks["endpoint-predict"]["dependentTasks"]
 
 
+def test_richer_artifacts_metrics_and_markdown(tmp_path: Path) -> None:
+    """score-and-track exposes a Metrics output; compare-backends a Markdown ranking (4A.4)."""
+    out = compile_pipeline(_cfg(ALL_THREE), tmp_path / "pipeline.yaml")
+    spec = yaml.safe_load(Path(out).read_text(encoding="utf-8"))
+    components = spec["components"]
+
+    def output_schemas(comp_key: str) -> set[str]:
+        arts = components[comp_key]["outputDefinitions"]["artifacts"]
+        return {a["artifactType"]["schemaTitle"] for a in arts.values()}
+
+    assert "system.Metrics" in output_schemas("comp-score-and-track")
+    assert "system.Markdown" in output_schemas("comp-compare-backends")
+
+
 def test_pipeline_name_and_config_param(tmp_path: Path) -> None:
     out = compile_pipeline(_cfg(ALL_THREE), tmp_path / "p.yaml")
     spec = yaml.safe_load(Path(out).read_text(encoding="utf-8"))

@@ -10,7 +10,9 @@ so the serving ``CMD`` is inert when the image runs as a component executor.
 Component bodies are executed inside that container, so all imports are function-local and reference
 only the installed ``geaptimes`` package. Predictions flow between components as Parquet
 ``Dataset`` artifacts on the pipeline root; per-backend ``{model, mae, rmse}`` dicts are returned as
-JSON parameters and collected by ``compare_backends`` to pick the winner.
+JSON parameters and collected by ``compare_backends`` to pick the winner. For at-a-glance results in
+the Vertex Pipelines UI, ``score_and_track`` also emits a ``Metrics`` artifact (per-backend MAE /
+RMSE scalars) and ``compare_backends`` a ``Markdown`` ranking table.
 """
 
 from dataclasses import dataclass
@@ -133,6 +135,7 @@ def build_components(image: str) -> PipelineComponents:  # noqa: PLR0915, C901 -
         config_json: str,
         model_name: str,
         predictions: dsl.Input[dsl.Dataset],
+        metrics: dsl.Output[dsl.Metrics],
     ) -> str:
         import base64
         import json
@@ -146,18 +149,18 @@ def build_components(image: str) -> PipelineComponents:  # noqa: PLR0915, C901 -
         cfg = ExperimentConfig.model_validate_json(config_json)
         frame = pd.read_parquet(predictions.path)
         result = steps.score_and_track_step(cfg, model_name, frame, tracker=ExperimentTracker(cfg))
-        metrics = result.record.metrics
+        scores = result.record.metrics
+        mae = float(scores["mae"])
+        rmse = float(scores["rmse"])
+        # Scalar metrics on the task itself (the system.Metrics artifact KFP renders in the Vertex
+        # Pipelines UI), in addition to the Vertex ExperimentRun logged inside the step.
+        metrics.log_metric("mae", mae)
+        metrics.log_metric("rmse", rmse)
         # Return base64(JSON), not a dict or raw JSON string. compare_backends collects these into a
         # ``list`` param, which KFP builds by *textual* placeholder substitution into the executor
         # input JSON -- a raw JSON value's quotes would break that JSON (and a dict has no
         # resolvable list-element type). base64's alphabet is both JSON- and substitution-safe.
-        payload = json.dumps(
-            {
-                "model": result.record.model,
-                "mae": float(metrics["mae"]),
-                "rmse": float(metrics["rmse"]),
-            }
-        )
+        payload = json.dumps({"model": result.record.model, "mae": mae, "rmse": rmse})
         return base64.b64encode(payload.encode("utf-8")).decode("ascii")
 
     @dsl.component(base_image=image)
@@ -204,7 +207,11 @@ def build_components(image: str) -> PipelineComponents:  # noqa: PLR0915, C901 -
         steps.teardown_serving_step(cfg)
 
     @dsl.component(base_image=image)
-    def compare_backends(rows: list, comparison: dsl.Output[dsl.Dataset]) -> str:
+    def compare_backends(
+        rows: list,
+        comparison: dsl.Output[dsl.Dataset],
+        ranking_md: dsl.Output[dsl.Markdown],
+    ) -> str:
         import base64
         import json
         from pathlib import Path
@@ -216,6 +223,13 @@ def build_components(image: str) -> PipelineComponents:  # noqa: PLR0915, C901 -
         result = steps.compare_step([(row["model"], row) for row in parsed])
         with Path(comparison.path).open("w", encoding="utf-8") as fh:
             json.dump({"winner": result.winner, "ranking": result.ranking}, fh, indent=2)
+        # Human-readable ranking table (the system.Markdown artifact rendered in the Vertex
+        # Pipelines UI); the winner row is flagged so the outcome is legible at a glance.
+        lines = ["| rank | model | mae | rmse |", "| --- | --- | --- | --- |"]
+        for idx, row in enumerate(result.ranking, start=1):
+            flag = " (winner)" if row["model"] == result.winner else ""
+            lines.append(f"| {idx} | {row['model']}{flag} | {row['mae']:.4f} | {row['rmse']:.4f} |")
+        Path(ranking_md.path).write_text("\n".join(lines) + "\n", encoding="utf-8")
         return result.winner
 
     return PipelineComponents(
