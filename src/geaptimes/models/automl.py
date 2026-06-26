@@ -8,8 +8,8 @@ daily granularity, the ``splits`` predefined-split column, the standardized
 
 Training and batch prediction run on Vertex (long-running, billable), so ``aiplatform`` is an
 injected seam — the kwargs builders are pure and unit-tested offline, and Stage 2 never launches a
-job. The first live AutoML run happens in Stage 3/4, which also confirms the batch-prediction
-output schema consumed by :meth:`AutoMLForecaster._to_predictions`.
+job. The first live AutoML run happens in Stage 4, which also confirms the nested batch-prediction
+output struct flattened by :meth:`AutoMLForecaster._flatten_automl_output`.
 """
 
 from typing import TYPE_CHECKING, Any, cast
@@ -44,6 +44,20 @@ _GRANULARITY_COUNT = 1
 _SPLIT_COLUMN = "splits"
 # Column emitted by Vertex batch prediction holding the point forecast (flattened by the reader).
 _PREDICTED_VALUE_COLUMN = "value"
+# Vertex forecasting batch output nests results in a STRUCT column named predicted_<target> with
+# fields: value (point), quantile_values (the trained levels), quantile_predictions (parallel).
+_QUANTILE_VALUES_FIELD = "quantile_values"
+_QUANTILE_PREDICTIONS_FIELD = "quantile_predictions"
+_QUANTILE_MATCH_TOLERANCE = 1e-6
+
+
+def _match_quantile_index(levels: "list[float]", level: float) -> int:
+    """Index of ``level`` within the model's emitted quantile levels (float-tolerant)."""
+    for i, candidate in enumerate(levels):
+        if abs(float(candidate) - level) < _QUANTILE_MATCH_TOLERANCE:
+            return i
+    msg = f"quantile level {level} not found in AutoML output levels {levels}"
+    raise ValueError(msg)
 
 
 class AutoMLForecaster(Forecaster):
@@ -142,7 +156,8 @@ class AutoMLForecaster(Forecaster):
         import pandas as pd  # noqa: PLC0415 - lazy heavy import
 
         raw = self._read_predictions()
-        predictions = self._to_predictions(raw, pd)
+        flat = self._flatten_automl_output(raw, pd)
+        predictions = self._to_predictions(flat, pd)
         metadata = {
             "job_display_name": self.display_name,
             "objective": self.params.optimization_objective,
@@ -150,22 +165,59 @@ class AutoMLForecaster(Forecaster):
         return ForecastResult(predictions=predictions, metadata=metadata)
 
     def _read_predictions(self) -> "pd.DataFrame":
-        """Submit batch prediction and return the (flattened) predictions frame."""
+        """Submit batch prediction and return the raw predictions frame."""
         if self._prediction_reader is not None:
             return self._prediction_reader()
         if self.model is None:  # pragma: no cover - guard for unfitted live use
             msg = "AutoMLForecaster.predict() requires fit() (or an injected prediction_reader)"
             raise RuntimeError(msg)
-        self.model.batch_predict(**self.batch_predict_kwargs())  # pragma: no cover - live only
-        msg = "Reading the AutoML batch-prediction output table is wired in Stage 4"
-        raise NotImplementedError(msg)  # pragma: no cover - live only
+        job = self.model.batch_predict(**self.batch_predict_kwargs())  # pragma: no cover - live
+        return self._read_output_table(job)  # pragma: no cover - live only
+
+    def _read_output_table(self, job: Any) -> "pd.DataFrame":  # noqa: ANN401 - external SDK job
+        """Read the BQ table Vertex wrote the batch predictions to (resolved from the job)."""
+        from google.cloud import bigquery  # noqa: PLC0415 - lazy cloud import
+
+        dataset = job.output_info.bigquery_output_dataset.removeprefix("bq://")
+        table = f"{dataset}.predictions"
+        # Table name resolved from the Vertex job output, not user input.
+        sql = f"SELECT * FROM `{table}`"  # noqa: S608
+        client = bigquery.Client(project=self.cfg.project.id)
+        return client.query(sql).to_dataframe()
+
+    def _flatten_automl_output(self, raw: "pd.DataFrame", pd: Any) -> "pd.DataFrame":  # noqa: ANN401
+        """Flatten Vertex's nested ``predicted_<target>`` struct to flat value + quantile columns.
+
+        Already-flat frames (e.g. an injected ``prediction_reader``) pass through unchanged. The
+        nested struct exposes ``value`` (point), ``quantile_values`` (the trained levels), and the
+        parallel ``quantile_predictions``; we select the standardized :data:`QUANTILES` by matching
+        levels. The exact field names are confirmed on the first live run (Stage 4).
+        """
+        data = self.cfg.data
+        struct_col = f"predicted_{data.target_column}"
+        if struct_col not in raw.columns:
+            return raw
+
+        records: list[dict[str, Any]] = []
+        for _, row in raw.iterrows():
+            struct = row[struct_col]
+            levels = [float(level) for level in struct[_QUANTILE_VALUES_FIELD]]
+            preds = list(struct[_QUANTILE_PREDICTIONS_FIELD])
+            record: dict[str, Any] = {
+                data.series_column: row[data.series_column],
+                data.time_column: row[data.time_column],
+                _PREDICTED_VALUE_COLUMN: float(struct[_PREDICTED_VALUE_COLUMN]),
+            }
+            for level in QUANTILES:
+                record[quantile_column(level)] = float(preds[_match_quantile_index(levels, level)])
+            records.append(record)
+        return pd.DataFrame.from_records(records)
 
     def _to_predictions(self, raw: "pd.DataFrame", pd: Any) -> "pd.DataFrame":  # noqa: ANN401
         """Map the flattened batch-prediction frame onto :data:`PREDICTION_COLUMNS`.
 
-        Expects the reader to expose the series/time keys, a point ``value`` column, and one
-        column per standardized quantile (``q10``..``q90``). The exact Vertex output schema is
-        confirmed on the first live run (Stage 4).
+        Expects series/time keys, a point ``value`` column, and one column per standardized
+        quantile (``q10``..``q90``) — i.e. the output of :meth:`_flatten_automl_output`.
         """
         data = self.cfg.data
         out = pd.DataFrame()

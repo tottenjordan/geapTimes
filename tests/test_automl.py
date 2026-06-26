@@ -1,6 +1,7 @@
 """Offline tests for AutoMLForecaster (config translation + fit wiring; no Vertex calls)."""
 
 import pandas as pd
+import pytest
 
 from geaptimes.models.automl import AutoMLForecaster
 from geaptimes.models.base import PREDICTION_COLUMNS, QUANTILES
@@ -147,3 +148,56 @@ def test_predict_maps_flattened_output() -> None:
     assert first["forecast"] == 10.0
     assert first["q90"] == 12.0
     assert list(preds["horizon_step"]) == [1, 2]
+
+
+def test_predict_flattens_nested_vertex_struct() -> None:
+    cfg = _cfg()
+    # Vertex forecasting batch output: a nested predicted_<target> STRUCT per row. BigQuery yields
+    # STRUCTs as dicts and ARRAYs as lists in pandas. Levels are intentionally out of order to
+    # exercise the level->index matching.
+    raw = pd.DataFrame(
+        {
+            "start_station_name": ["s0", "s0"],
+            "date": pd.to_datetime(["2018-05-18", "2018-05-19"]),
+            "predicted_num_trips": [
+                {
+                    "value": 10.0,
+                    "quantile_values": [0.5, 0.1, 0.9, 0.3, 0.7],
+                    "quantile_predictions": [10.0, 8.0, 12.0, 9.0, 11.0],
+                },
+                {
+                    "value": 11.0,
+                    "quantile_values": [0.5, 0.1, 0.9, 0.3, 0.7],
+                    "quantile_predictions": [11.0, 9.0, 13.0, 10.0, 12.0],
+                },
+            ],
+        }
+    )
+    fc = AutoMLForecaster(cfg.models[0], cfg, prediction_reader=lambda: raw)
+    preds = fc.predict().predictions
+    assert list(preds.columns) == PREDICTION_COLUMNS
+    first = preds.iloc[0]
+    assert first["forecast"] == 10.0
+    # matched by level, not position: q10=8, q50=10, q90=12
+    assert (first["q10"], first["q50"], first["q90"]) == (8.0, 10.0, 12.0)
+    assert list(preds["horizon_step"]) == [1, 2]
+
+
+def test_flatten_raises_on_missing_quantile_level() -> None:
+    cfg = _cfg()
+    raw = pd.DataFrame(
+        {
+            "start_station_name": ["s0"],
+            "date": pd.to_datetime(["2018-05-18"]),
+            "predicted_num_trips": [
+                {
+                    "value": 10.0,
+                    "quantile_values": [0.1, 0.3, 0.5, 0.7],  # missing 0.9
+                    "quantile_predictions": [8.0, 9.0, 10.0, 11.0],
+                }
+            ],
+        }
+    )
+    fc = AutoMLForecaster(cfg.models[0], cfg, prediction_reader=lambda: raw)
+    with pytest.raises(ValueError, match=r"quantile level 0\.9 not found"):
+        fc.predict()
