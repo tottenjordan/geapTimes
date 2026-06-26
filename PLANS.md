@@ -55,7 +55,7 @@ evaluation + the polished CLI remain in Stage 5.
 | 4.5 | `pipelines/{config,steps}.py` — pure pipeline helpers + injected-seam step functions | done | `a429bdb` |
 | 4.6 | `pipelines/{components,pipeline,compile}.py` — KFP components + comparison DAG + compile; add `kfp` | done | `82cafda` |
 | 4.7 | `pipelines/container/{Dockerfile,cloudbuild.yaml}` + `setup_gcp.py` AR repo + `requirements.txt` | done | `2802b12` |
-| 4.8 | `pipelines/submit.py` — submit `PipelineJob` + `--enable-automl` override | pending | — |
+| 4.8 | `pipelines/submit.py` — submit `PipelineJob` + `--enable-automl` override | done | `a8303ff` |
 | 4.9 | Live comparison run on `hybrid-vertex` (TimesFM + BQML + AutoML floor) + notes | pending | — |
 
 ### 4.1 Schema + config
