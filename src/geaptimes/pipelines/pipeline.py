@@ -157,7 +157,12 @@ def build_pipeline(cfg: "ExperimentConfig") -> "BaseComponent":  # noqa: PLR0915
                     display_name=timesfm_endpoint_display_name(cfg),
                     labels=resource_labels(),
                 )
-                endpoint.set_caching_options(caching)
+                # Never cache the ephemeral endpoint lifecycle: a cached endpoint-create hands back
+                # an endpoint that a prior run's ExitHandler teardown already deleted, so the deploy
+                # then targets a non-existent endpoint. The model registry tasks above stay
+                # cacheable (their model artifacts survive teardown); only create/deploy/predict/
+                # teardown must re-run every submit.
+                endpoint.set_caching_options(False)
                 endpoint.set_display_name("create-endpoint")
                 deploy = ModelDeployOp(
                     model=register.outputs["model"],
@@ -168,7 +173,7 @@ def build_pipeline(cfg: "ExperimentConfig") -> "BaseComponent":  # noqa: PLR0915
                     dedicated_resources_max_replica_count=serving.max_replica_count,
                     traffic_split={"0": "100"},
                 )
-                deploy.set_caching_options(caching)
+                deploy.set_caching_options(False)  # see create-endpoint: ephemeral, never cache
                 deploy.set_display_name("deploy-endpoint")
                 # endpoint_predict stays custom (online predict + our frame mapping). It consumes
                 # the VertexEndpoint artifact and must run *after* the deploy completes.
@@ -186,7 +191,7 @@ def build_pipeline(cfg: "ExperimentConfig") -> "BaseComponent":  # noqa: PLR0915
                     prepped=prepped.outputs["prepped"],
                 )
                 served.set_display_name("timesfm:batch-predict")
-            served.set_caching_options(caching)
+            served.set_caching_options(False)  # depends on the live deployment; never cache
             _size(served)
             # TimesFM has no training step; its served predictions feed the same shared scorer.
             score_timesfm = comps.score_and_track(
@@ -207,6 +212,7 @@ def build_pipeline(cfg: "ExperimentConfig") -> "BaseComponent":  # noqa: PLR0915
     def comparison(config_json: str = default_config_json) -> None:
         if needs_teardown:
             teardown = comps.teardown_serving(config_json=config_json)
+            teardown.set_caching_options(False)  # must always run to delete the transient endpoint
             teardown.set_display_name("teardown-serving")
             _size(teardown)
             with dsl.ExitHandler(teardown):

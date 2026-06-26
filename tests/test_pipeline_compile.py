@@ -196,6 +196,25 @@ def test_table_artifacts_wire_data_lineage_into_every_backend(tmp_path: Path) ->
     assert "model-deploy" in tasks["endpoint-predict"]["dependentTasks"]
 
 
+def test_serving_lifecycle_tasks_are_never_cached(tmp_path: Path) -> None:
+    """The ephemeral endpoint lifecycle must re-run every submit, not cache across runs.
+
+    A cached endpoint-create would hand back an endpoint a prior run's ExitHandler teardown already
+    deleted (and a cached teardown would strand a live endpoint). The deterministic producers stay
+    cacheable. Disabled caching renders as an empty ``cachingOptions``; enabled as ``enableCache``.
+    """
+    tasks = _tasks_by_name(_cfg(ALL_THREE), tmp_path)
+
+    def cached(task: str) -> bool:
+        return bool(tasks[task].get("cachingOptions", {}).get("enableCache"))
+
+    for task in ("endpoint-create", "model-deploy", "endpoint-predict", "teardown-serving"):
+        assert not cached(task), f"{task} must not be cached"
+    # deterministic producers remain cacheable
+    for task in ("build-tables", "model-upload", "importer", "train-backend"):
+        assert cached(task), f"{task} should stay cacheable"
+
+
 def test_richer_artifacts_metrics_and_markdown(tmp_path: Path) -> None:
     """score-and-track exposes a Metrics output; compare-backends a Markdown ranking (4A.4)."""
     out = compile_pipeline(_cfg(ALL_THREE), tmp_path / "pipeline.yaml")
