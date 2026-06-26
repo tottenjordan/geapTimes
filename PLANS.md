@@ -240,13 +240,22 @@ GCPC serving + surviving 4A items. Each phase ends in a STOP checkpoint.
 | P1.2 | `steps.py`: `train_backend_step` + `infer_backend_step`; shared `score_and_track_step` (model-config params); retire `run_backend_step` | done | 172a6b4 |
 | P1.3 | `components.py`: `train_backend`/`infer_backend`/`score_and_track`; strip score+track from endpoint/batch predict | done | 172a6b4 |
 | P1.4 | `pipeline.py`: rewire `_body` to train→infer→score per backend + TimesFM→score; `train:`/`infer:`/`score:` display names | done | 172a6b4 |
-| P1.5 | Offline gate green + compile asserts train→infer→score edges; **cheap `--disable-automl` live run**; STOP | in progress | |
+| P1.5 | Offline gate green + compile asserts train→infer→score edges; **cheap `--disable-automl` live run**; STOP | done | 172a6b4, 25a7400 |
 
 Offline gate green (158 passed; ruff/format/ty clean) and the compiled DAG verified:
 `build-tables → train:{m} → infer:{m} → score:{m} → compare`, TimesFM `register → deploy →
-endpoint-predict → score:timesfm → compare`, teardown as ExitHandler. **Remaining for P1.5:** rebuild
-the runtime image + submit `--disable-automl` (cheap BQML+TimesFM validation), then STOP for approval.
-AutoML deferred to the Phase 2 full run (avoids a throwaway ~2.5h; also first live check of `e8a0f5f`).
+endpoint-predict → score:timesfm → compare`, teardown as ExitHandler. **Live `--disable-automl` run
+`…-20260626114824` SUCCEEDED** end-to-end: BQML train→infer→score, TimesFM register→deploy→
+endpoint-predict→score, compare winner **bqml_arima_xreg** (MAE 77.7 vs TimesFM 85.5), ExitHandler
+teardown. AutoML deferred to the Phase 2 full run (avoids a throwaway ~2.5h; first live check of
+`e8a0f5f`). **Phase 1 complete — STOP approved 2026-06-26.**
+
+**Fan-in fix (25a7400):** `compare-backends` failed twice live before passing — KFP collects
+`score_and_track` outputs into the `rows` list by *textual* substitution into the executor-input
+JSON, so a dict output failed type binding and a raw-JSON-string output broke the JSON (unescaped
+quotes). Fix: `score_and_track` returns **base64(JSON)**, `compare_backends` decodes; a contract test
+asserts the output stays in the base64 alphabet so a regression fails offline, not in a live run.
+Idiomatic artifact-based fan-in (replacing the base64 hop) is a Phase 2 cleanup candidate.
 
 ### Phase 2 — Hybrid GCPC serving + data prep + artifacts (outline)
 
