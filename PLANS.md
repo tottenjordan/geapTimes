@@ -236,10 +236,10 @@ GCPC serving + surviving 4A items. Each phase ends in a STOP checkpoint.
 
 | # | Item | Status | Commit |
 |---|------|--------|--------|
-| P1.1 | `Forecaster` interface: `model_reference` + `attach_model` (base default; bqml/automl overrides) | done | b375445 |
-| P1.2 | `steps.py`: `train_backend_step` + `infer_backend_step`; shared `score_and_track_step` (model-config params); retire `run_backend_step` | done | b375445 |
-| P1.3 | `components.py`: `train_backend`/`infer_backend`/`score_and_track`; strip score+track from endpoint/batch predict | done | b375445 |
-| P1.4 | `pipeline.py`: rewire `_body` to train→infer→score per backend + TimesFM→score; `train:`/`infer:`/`score:` display names | done | b375445 |
+| P1.1 | `Forecaster` interface: `model_reference` + `attach_model` (base default; bqml/automl overrides) | done | 172a6b4 |
+| P1.2 | `steps.py`: `train_backend_step` + `infer_backend_step`; shared `score_and_track_step` (model-config params); retire `run_backend_step` | done | 172a6b4 |
+| P1.3 | `components.py`: `train_backend`/`infer_backend`/`score_and_track`; strip score+track from endpoint/batch predict | done | 172a6b4 |
+| P1.4 | `pipeline.py`: rewire `_body` to train→infer→score per backend + TimesFM→score; `train:`/`infer:`/`score:` display names | done | 172a6b4 |
 | P1.5 | Offline gate green + compile asserts train→infer→score edges; **cheap `--disable-automl` live run**; STOP | in progress | |
 
 Offline gate green (158 passed; ruff/format/ty clean) and the compiled DAG verified:
