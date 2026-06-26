@@ -16,7 +16,7 @@ Status legend: `pending` · `in progress` · `done` · `blocked`
 | Stage | Title | Status |
 |-------|-------|--------|
 | 1 | Data Architecture & Config Schema | done |
-| 2 | Model Factory & Forecaster Abstractions | in progress |
+| 2 | Model Factory & Forecaster Abstractions | items done — STOP (awaiting approval) |
 | 3 | Experiment Tracking & DOE Framework | pending |
 | 4 | Managed Pipelines & Cloud Orchestration | pending |
 | 5 | Standardized Evaluation & Entry Point | pending |
@@ -46,8 +46,8 @@ so they import and unit-test fully offline. Every backend returns the same `Fore
 | 2.3 | `models/timesfm.py` — `TimesFMForecaster` (in-process, device-agnostic) | done | `475bf02` |
 | 2.4 | `models/bqml.py` — `BQMLForecaster` (ARIMA_PLUS_XREG SQL) | done | `97a07f6` |
 | 2.5 | `models/automl.py` — `AutoMLForecaster` (managed job config) | done | `052f7ba` |
-| 2.6 | `models/factory.py` — `ForecastFactory` | pending | |
-| 2.7 | Demo — `02_timesfm_local.ipynb` + `scripts/demo_timesfm.py` | pending | |
+| 2.6 | `models/factory.py` — `ForecastFactory` | done | `23c3ee8` |
+| 2.7 | Demo — `02_timesfm_local.ipynb` + `scripts/demo_timesfm.py` | done | `0a4c4c2` |
 
 ### 2.1 `models/base.py`
 `Forecaster` ABC (`fit()` / `predict() -> ForecastResult`), `ForecastResult` dataclass
