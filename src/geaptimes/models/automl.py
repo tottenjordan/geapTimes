@@ -3,9 +3,11 @@
 The substantive job of this wrapper is translating the typed config into the
 ``AutoMLForecastingTrainingJob`` SDK surface: the covariate **column roles** (attribute /
 available-at-forecast / unavailable-at-forecast, with the target itself marked unavailable as Vertex
-requires), the forecast horizon and context window, the daily granularity, Vertex's default
-chronological split over the TEST-free train table, the standardized
-:data:`~geaptimes.models.base.QUANTILES`, holiday regions, and the ``solution=geaptimes`` labels.
+requires), the explicit **column transformations** (``auto`` for every used column *including the
+target* -- the SDK's default omits the target, which Vertex Forecasting then rejects), the forecast
+horizon and context window, the daily granularity, Vertex's default chronological split over the
+TEST-free train table, the standardized :data:`~geaptimes.models.base.QUANTILES`, holiday regions,
+and the ``solution=geaptimes`` labels.
 
 Training and batch prediction run on Vertex (long-running, billable), so ``aiplatform`` is an
 injected seam — the kwargs builders are pure and unit-tested offline, and Stage 2 never launches a
@@ -87,11 +89,35 @@ class AutoMLForecaster(Forecaster):
         region = self.cfg.data.holiday_region
         return [region] if region else None
 
+    def _column_specs(self) -> dict[str, str]:
+        """Column-type transformations for every column the model uses.
+
+        The SDK's default (passing neither ``column_specs`` nor ``column_transformations``) auto-
+        generates an ``auto`` transformation for every dataset column *except the target* -- but
+        Vertex Forecasting then rejects the job because the target carries no transformation
+        ("The target column ... does not have a numeric or auto transformation."). So we build the
+        specs ourselves, mirroring that default ``auto`` behaviour while *including* the target.
+        Columns are the union of the target and every role column (time, series id, and the three
+        covariate groups); duplicates collapse in the dict.
+        """
+        data = self.cfg.data
+        covariates = data.covariates
+        columns = [
+            data.target_column,
+            data.time_column,
+            data.series_column,
+            *covariates.time_series_attribute_columns,
+            *covariates.available_at_forecast_columns,
+            *covariates.unavailable_at_forecast_columns,
+        ]
+        return dict.fromkeys(columns, "auto")
+
     def training_job_kwargs(self) -> dict[str, Any]:
         """Constructor kwargs for ``AutoMLForecastingTrainingJob``."""
         return {
             "display_name": self.display_name,
             "optimization_objective": self.params.optimization_objective,
+            "column_specs": self._column_specs(),
             "labels": dict(RESOURCE_LABELS),
         }
 

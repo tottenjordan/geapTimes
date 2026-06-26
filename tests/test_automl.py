@@ -72,6 +72,16 @@ def test_training_job_kwargs() -> None:
     assert kw["labels"] == {"solution": "geaptimes"}
 
 
+def test_training_job_kwargs_column_specs_cover_target_and_roles() -> None:
+    specs = _forecaster().training_job_kwargs()["column_specs"]
+    # Every used column gets an explicit "auto" transformation -- crucially the target, which the
+    # SDK's default auto-generation omits (Vertex Forecasting then rejects the job).
+    assert specs["num_trips"] == "auto"
+    for col in ("date", "start_station_name", *ATTR, *AVAIL, *UNAVAIL):
+        assert specs[col] == "auto"
+    assert set(specs) == {"num_trips", "date", "start_station_name", *ATTR, *AVAIL, *UNAVAIL}
+
+
 def test_run_kwargs_maps_column_roles_and_settings() -> None:
     kw = _forecaster().run_kwargs()
     assert kw["target_column"] == "num_trips"
