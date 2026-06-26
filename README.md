@@ -30,6 +30,36 @@ are tracked as platform Experiments with a Design-of-Experiments (DOE) matrix.
   [docs/notes](./docs/notes/forecasting-covariate-and-model-constraints.md) for the covariate
   taxonomy and per-model constraints.
 
+## Pipeline
+
+The comparison pipeline orchestrates the `ForecastFactory` on **Vertex AI Pipelines** (KFP). It runs
+every backend through a uniform **train → infer → score** chain that feeds **one shared scorer**, so a
+single ranking is produced from identical metrics across all models:
+
+- **`ForecastFactory`** builds the typed `Forecaster` for each enabled backend (AutoML, BQML, TimesFM).
+  Backend heterogeneity lives *inside* the forecaster — the DAG stays uniform.
+- **Train → infer split** passes the trained model as an artifact between steps, so an inference-side
+  failure re-uses the cached trained model instead of re-running a multi-hour training job.
+- **Hybrid serving** — TimesFM is served via **Google Cloud Pipeline Components** (managed
+  upload/endpoint/deploy infra) wrapped by **custom components** that own all forecasting logic and
+  experiment tracking; AutoML and BQML stay custom SDK-wrapper components.
+- **Self-cleaning** — the transient TimesFM endpoint is torn down by a `dsl.ExitHandler` on both
+  success and failure, so no serving infra is stranded.
+- Each backend's run is logged as a **Vertex AI Experiment** run, and a final `compare-backends` step
+  emits the ranked comparison artifact (winner by MAE/RMSE).
+
+See [CODE_STANDARDS.md](./CODE_STANDARDS.md#pipeline-components--gcpc-vs-custom-hybrid-serving) for the
+GCPC-vs-custom component split.
+
+<details>
+<summary>📊 Pipeline DAG — Vertex AI console view (click to expand)</summary>
+
+<br>
+
+![geapTimes comparison pipeline — Vertex AI console view](docs/media/27b_pipeline_console_view.png)
+
+</details>
+
 ## Tech stack
 
 - Python **3.11**, **`uv`** for packaging, **`ruff`** + **`ty`** + **`pytest`**.
@@ -106,7 +136,8 @@ geapTimes/
 ├── tests/                            # pytest suite (offline; cloud seams injected)
 ├── docs/
 │   ├── plans/                        # immutable approved per-stage plans
-│   └── notes/                        # durable cross-session design notes
+│   ├── notes/                        # durable cross-session design notes
+│   └── media/                        # README/doc images
 ├── PLANS.md                          # living roadmap + active-stage tracker
 ├── CODE_STANDARDS.md                 # authoritative tooling/layout/commit policy
 └── pyproject.toml                    # uv-managed project + tool config
