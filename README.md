@@ -2,7 +2,7 @@
 
 <h1 align="center">🚲 geapTimes ⌛</h1>
 
-> A production-grade, config-driven time-series forecasting framework for **NYC Citibike** demand on the **Gemini Enterprise Agent Platform** (*fka Vertex AI*).
+> A modular, production-grade factory framework for enterprise time-series forecasting on the **Gemini Enterprise Agent Platform** (GEAP, *fka Vertex AI*). The `ForecastFactory` creates model experiments for Google's `TimesFM`, `AutoML`, and `BigQuery ML` services.
 
 ![Python](https://img.shields.io/badge/Python-3.11-3776AB?logo=python&logoColor=white)
 ![uv](https://img.shields.io/badge/packaging-uv-DE5FE9?logo=uv&logoColor=white)
