@@ -101,6 +101,10 @@ class DataConfig(_Base):
     station_filter: StationFilter = Field(default_factory=StationFilter)
     date_range: DateRange = Field(default_factory=DateRange)
     gap_fill: bool = True
+    # Bypass the ensure_source/ensure_prepped existence + fingerprint guard and rebuild the source
+    # and prepped tables unconditionally (e.g. the upstream public data changed but the config --
+    # hence the fingerprint -- did not). Exposed on submit as ``--force-data-rebuild``.
+    force_rebuild: bool = False
     weather: WeatherConfig = Field(default_factory=WeatherConfig)
     splits: SplitConfig = Field(default_factory=SplitConfig)
     covariates: CovariateRoles = Field(default_factory=CovariateRoles)
@@ -260,7 +264,10 @@ class PipelineConfig(_Base):
     pipeline_root: str | None = None
     image: ArtifactRegistryConfig = Field(default_factory=ArtifactRegistryConfig)
     serving: ServingConfig = Field(default_factory=ServingConfig)
-    component_machine_type: str = "e2-standard-4"
+    # Executor machine for the custom component pods. These are supervisors -- they issue BigQuery
+    # / Vertex API calls and wait, not heavy compute -- so the smaller e2-standard-2 is right-sized
+    # (translated to CPU/memory limits in geaptimes.pipelines.config.component_resources).
+    component_machine_type: str = "e2-standard-2"
     enable_caching: bool = True
 
     def resolved_pipeline_root(self, *, gcs_bucket: str, experiment_name: str) -> str:

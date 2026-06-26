@@ -62,6 +62,19 @@ def with_automl_disabled(cfg: ExperimentConfig) -> ExperimentConfig:
     return ExperimentConfig.model_validate(data)
 
 
+def with_data_rebuild_forced(cfg: ExperimentConfig) -> ExperimentConfig:
+    """Return a re-validated copy of *cfg* with the data-prep rebuild guard bypassed.
+
+    Sets ``data.force_rebuild: true`` so ``ensure_source`` / ``ensure_prepped`` rebuild the source
+    and prepped tables even when the stored fingerprint is current -- the manual override for when
+    the upstream public data changed but the config (hence the fingerprint) did not. Exposed as the
+    ``--force-data-rebuild`` CLI flag. The input config is never mutated.
+    """
+    data = cfg.model_dump()
+    data["data"]["force_rebuild"] = True
+    return ExperimentConfig.model_validate(data)
+
+
 def _lazy_aiplatform() -> Any:  # noqa: ANN401 - external SDK module
     from google.cloud import aiplatform  # noqa: PLC0415 - lazy cloud import
 
@@ -180,6 +193,11 @@ def main(argv: "list[str] | None" = None) -> int:
         "billable AutoML training while iterating on the pipeline.",
     )
     parser.add_argument(
+        "--force-data-rebuild",
+        action="store_true",
+        help="Rebuild the source/prepped tables even if current (bypass the fingerprint guard).",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Compile the pipeline only; do not submit (no cloud calls, no spend).",
@@ -200,6 +218,8 @@ def main(argv: "list[str] | None" = None) -> int:
         cfg = with_automl_enabled(cfg)
     elif args.disable_automl:
         cfg = with_automl_disabled(cfg)
+    if args.force_data_rebuild:
+        cfg = with_data_rebuild_forced(cfg)
 
     if args.preflight_automl:
         preflight_automl(cfg)

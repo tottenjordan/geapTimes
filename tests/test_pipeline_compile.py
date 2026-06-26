@@ -210,6 +210,23 @@ def test_richer_artifacts_metrics_and_markdown(tmp_path: Path) -> None:
     assert "system.Markdown" in output_schemas("comp-compare-backends")
 
 
+def test_component_machine_type_sizes_custom_executors(tmp_path: Path) -> None:
+    """The configured component machine type becomes CPU/memory limits on the custom pods (4A.8).
+
+    GCPC ops run in Google-managed images and are deliberately left unsized -- their machine is
+    GCPC-controlled -- so only the custom component executors carry our resource limits.
+    """
+    out = compile_pipeline(_cfg(ALL_THREE), tmp_path / "pipeline.yaml")
+    spec = yaml.safe_load(Path(out).read_text(encoding="utf-8"))
+    execs = spec["deploymentSpec"]["executors"]
+    # default e2-standard-2 -> 2 vCPU / 8 GB on a custom component pod
+    res = execs["exec-build-tables"]["container"]["resources"]
+    assert res["resourceCpuLimit"] == "2"
+    assert res["resourceMemoryLimit"] == "8G"
+    # GCPC serving ops keep their managed sizing (we set no resource limits on them)
+    assert "resources" not in execs["exec-model-upload"]["container"]
+
+
 def test_pipeline_name_and_config_param(tmp_path: Path) -> None:
     out = compile_pipeline(_cfg(ALL_THREE), tmp_path / "p.yaml")
     spec = yaml.safe_load(Path(out).read_text(encoding="utf-8"))

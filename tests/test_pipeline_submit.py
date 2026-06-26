@@ -113,6 +113,18 @@ def test_with_automl_disabled_noop_when_absent() -> None:
     assert [m.params.type for m in out.models] == ["timesfm", "bqml"]
 
 
+# -- with_data_rebuild_forced ---------------------------------------------------------------------
+def test_with_data_rebuild_forced_sets_flag() -> None:
+    out = submit.with_data_rebuild_forced(_cfg())
+    assert out.data.force_rebuild is True
+
+
+def test_with_data_rebuild_forced_does_not_mutate_input() -> None:
+    base = _cfg()
+    submit.with_data_rebuild_forced(base)
+    assert base.data.force_rebuild is False  # input untouched
+
+
 # -- submit_pipeline ------------------------------------------------------------------------------
 def test_submit_pipeline_compiles_and_submits(tmp_path: Path) -> None:
     aip = _FakeAip()
@@ -259,6 +271,20 @@ def test_cli_disable_automl_drops_backend(tmp_path: Path) -> None:
     assert rc == 0
     # only bqml runs in-process; the AutoML train-backend is gone (timesfm is served, not trained)
     assert _train_backend_executors(out) == {"exec-train-backend"}
+
+
+def test_cli_force_data_rebuild_sets_config_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, ExperimentConfig] = {}
+
+    def fake_submit(cfg: ExperimentConfig, **_kw: object) -> None:
+        captured["cfg"] = cfg
+
+    monkeypatch.setattr(submit, "submit_pipeline", fake_submit)
+    rc = submit.main(["--config", _write_config(tmp_path), "--force-data-rebuild"])
+    assert rc == 0
+    assert captured["cfg"].data.force_rebuild is True
 
 
 def test_cli_enable_and_disable_are_mutually_exclusive(tmp_path: Path) -> None:

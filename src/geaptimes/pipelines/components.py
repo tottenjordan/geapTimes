@@ -52,7 +52,7 @@ def build_components(image: str) -> PipelineComponents:  # noqa: PLR0915, C901 -
         from geaptimes.schemas import ExperimentConfig
 
         cfg = ExperimentConfig.model_validate_json(config_json)
-        ref = steps.ensure_source_step(cfg)
+        ref = steps.ensure_source_step(cfg, force=cfg.data.force_rebuild)
         # Emit a table-reference lineage Dataset artifact: a BigQuery *reference* (bq:// uri +
         # fingerprint + rows), not the data itself, opening the source->prepped lineage chain.
         source.uri = f"bq://{ref.name}"
@@ -72,7 +72,7 @@ def build_components(image: str) -> PipelineComponents:  # noqa: PLR0915, C901 -
 
         _ = source  # lineage + ordering edge: prepped is derived from the source table
         cfg = ExperimentConfig.model_validate_json(config_json)
-        ref = steps.ensure_prepped_step(cfg)
+        ref = steps.ensure_prepped_step(cfg, force=cfg.data.force_rebuild)
         prepped.uri = f"bq://{ref.name}"
         prepped.metadata["table"] = ref.name
         prepped.metadata["rows"] = ref.rows

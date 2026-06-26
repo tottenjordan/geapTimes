@@ -21,6 +21,15 @@ _HEALTH_ROUTE = "/health"
 _PREDICT_ROUTE = "/predict"
 _SERVING_PORT = 8080
 
+# Custom component executor sizing: machine type -> (cpu limit, memory limit). KFP lightweight
+# components expose no machine-type knob; on Vertex Pipelines the CPU/memory limits select the
+# executor machine, so we translate the configured machine type to those limits.
+_COMPONENT_RESOURCES = {
+    "e2-standard-2": ("2", "8G"),
+    "e2-standard-4": ("4", "16G"),
+    "e2-standard-8": ("8", "32G"),
+}
+
 
 def image_uri(cfg: "ExperimentConfig") -> str:
     """Fully-qualified Artifact Registry URI for the geapTimes runtime image."""
@@ -82,6 +91,23 @@ def serving_env_vars(cfg: "ExperimentConfig") -> dict[str, str]:
         "TIMESFM_HORIZON": str(cfg.forecast.horizon),
         "TIMESFM_QUANTILES": "true" if quantiles else "false",
     }
+
+
+def component_resources(cfg: "ExperimentConfig") -> tuple[str, str]:
+    """``(cpu_limit, memory_limit)`` for the custom component pods, from ``component_machine_type``.
+
+    Translating the machine type to KFP CPU/memory limits is what makes the right-size real: on
+    Vertex Pipelines those limits select the smallest machine that fits (so ``e2-standard-2`` ->
+    2 vCPU / 8 GB). An unsupported machine type fails loudly at compile time rather than silently
+    falling back to a default size.
+    """
+    machine = cfg.pipeline.component_machine_type
+    try:
+        return _COMPONENT_RESOURCES[machine]
+    except KeyError:
+        supported = ", ".join(sorted(_COMPONENT_RESOURCES))
+        msg = f"unsupported component_machine_type {machine!r}; supported: {supported}"
+        raise ValueError(msg) from None
 
 
 def timesfm_container_spec(cfg: "ExperimentConfig") -> dict[str, Any]:

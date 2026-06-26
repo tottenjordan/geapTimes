@@ -26,6 +26,7 @@ from kfp.dsl import importer
 from geaptimes.naming import config_slug
 from geaptimes.pipelines.components import build_components
 from geaptimes.pipelines.config import (
+    component_resources,
     image_uri,
     pipeline_root,
     resource_labels,
@@ -35,6 +36,7 @@ from geaptimes.pipelines.config import (
 )
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
+    from kfp.dsl import PipelineTask
     from kfp.dsl.base_component import BaseComponent
 
     from geaptimes.schemas import ExperimentConfig
@@ -68,8 +70,14 @@ def build_pipeline(cfg: "ExperimentConfig") -> "BaseComponent":  # noqa: PLR0915
     in_process = _in_process_model_names(cfg)
     timesfm = _timesfm_enabled(cfg)
     needs_teardown = timesfm and serving.mode == "endpoint" and not serving.keep_deployed
+    cpu_limit, memory_limit = component_resources(cfg)
 
-    def _body(config_json: str) -> None:
+    def _size(task: "PipelineTask") -> None:
+        """Right-size a custom component's executor pod; GCPC ops keep their managed sizing."""
+        task.set_cpu_limit(cpu_limit)
+        task.set_memory_limit(memory_limit)
+
+    def _body(config_json: str) -> None:  # noqa: PLR0915 - one task per DAG node + sizing
         # Self-bootstrapping data prep: ensure source -> prepped exist (guarded by an
         # existence + config-fingerprint check inside the steps), then derive train/infer. The
         # prepped Dataset artifact flows from ensure-prepped into build-tables AND the TimesFM
@@ -77,12 +85,15 @@ def build_pipeline(cfg: "ExperimentConfig") -> "BaseComponent":  # noqa: PLR0915
         source = comps.ensure_source(config_json=config_json)
         source.set_caching_options(caching)
         source.set_display_name("ensure-source")
+        _size(source)
         prepped = comps.ensure_prepped(config_json=config_json, source=source.outputs["source"])
         prepped.set_caching_options(caching)
         prepped.set_display_name("ensure-prepped")
+        _size(prepped)
         tables = comps.build_tables(config_json=config_json, prepped=prepped.outputs["prepped"])
         tables.set_caching_options(caching)
         tables.set_display_name("build-tables")
+        _size(tables)
         rows = []
         for model_name in in_process:
             # Each in-process backend is a train -> infer -> score chain. The trained model is
@@ -96,6 +107,7 @@ def build_pipeline(cfg: "ExperimentConfig") -> "BaseComponent":  # noqa: PLR0915
             )
             train.set_caching_options(caching)
             train.set_display_name(f"train:{model_name}")
+            _size(train)
             infer = comps.infer_backend(
                 config_json=config_json,
                 model_name=model_name,
@@ -104,6 +116,7 @@ def build_pipeline(cfg: "ExperimentConfig") -> "BaseComponent":  # noqa: PLR0915
             )
             infer.set_caching_options(caching)
             infer.set_display_name(f"infer:{model_name}")
+            _size(infer)
             score = comps.score_and_track(
                 config_json=config_json,
                 model_name=model_name,
@@ -111,6 +124,7 @@ def build_pipeline(cfg: "ExperimentConfig") -> "BaseComponent":  # noqa: PLR0915
             )
             score.set_caching_options(caching)
             score.set_display_name(f"score:{model_name}")
+            _size(score)
             rows.append(score.outputs["Output"])
         if timesfm:
             # Hybrid serving lifecycle via GCPC ops (standardized google.Vertex* artifacts +
@@ -170,6 +184,7 @@ def build_pipeline(cfg: "ExperimentConfig") -> "BaseComponent":  # noqa: PLR0915
                 )
                 served.set_display_name("timesfm:batch-predict")
             served.set_caching_options(caching)
+            _size(served)
             # TimesFM has no training step; its served predictions feed the same shared scorer.
             score_timesfm = comps.score_and_track(
                 config_json=config_json,
@@ -178,16 +193,19 @@ def build_pipeline(cfg: "ExperimentConfig") -> "BaseComponent":  # noqa: PLR0915
             )
             score_timesfm.set_caching_options(caching)
             score_timesfm.set_display_name("score:timesfm")
+            _size(score_timesfm)
             rows.append(score_timesfm.outputs["Output"])
         compare = comps.compare_backends(rows=rows)
         compare.set_caching_options(caching)
         compare.set_display_name("compare-backends")
+        _size(compare)
 
     @dsl.pipeline(name=name, pipeline_root=root)
     def comparison(config_json: str = default_config_json) -> None:
         if needs_teardown:
             teardown = comps.teardown_serving(config_json=config_json)
             teardown.set_display_name("teardown-serving")
+            _size(teardown)
             with dsl.ExitHandler(teardown):
                 _body(config_json)
         else:

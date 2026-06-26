@@ -1,5 +1,7 @@
 """Tests for the pure pipeline config derivations."""
 
+import pytest
+
 from geaptimes.pipelines import config as pcfg
 from geaptimes.schemas import ExperimentConfig
 
@@ -34,6 +36,19 @@ def test_display_names_use_config_slug() -> None:
 
 def test_resource_labels() -> None:
     assert pcfg.resource_labels() == {"solution": "geaptimes"}
+
+
+def test_component_resources_maps_machine_type() -> None:
+    # Default machine is now e2-standard-2 (right-sized supervisor pods, 4A.8).
+    assert pcfg.component_resources(_cfg()) == ("2", "8G")
+    sized = _cfg(pipeline={"component_machine_type": "e2-standard-4"})
+    assert pcfg.component_resources(sized) == ("4", "16G")
+
+
+def test_component_resources_rejects_unknown_machine() -> None:
+    bad = _cfg(pipeline={"component_machine_type": "n1-mega-99"})
+    with pytest.raises(ValueError, match="unsupported component_machine_type"):
+        pcfg.component_resources(bad)
 
 
 def test_serving_env_vars_from_timesfm_params() -> None:

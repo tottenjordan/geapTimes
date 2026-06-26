@@ -89,7 +89,13 @@ class _FakeMetrics:
 
 
 def test_ensure_source_component(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(steps, "ensure_source_step", lambda _cfg: steps.TableRef("p.ds.src__x", 44))
+    seen: dict[str, Any] = {}
+
+    def fake(_cfg: object, *, force: bool) -> steps.TableRef:
+        seen["force"] = force
+        return steps.TableRef("p.ds.src__x", 44)
+
+    monkeypatch.setattr(steps, "ensure_source_step", fake)
     source = _FakeDatasetArtifact()
     out = COMPS.ensure_source.python_func(config_json=CFG_JSON, source=source)
     assert out is None  # emits a lineage artifact, no return value
@@ -97,12 +103,17 @@ def test_ensure_source_component(monkeypatch: pytest.MonkeyPatch) -> None:
     assert source.metadata["table"] == "p.ds.src__x"
     assert source.metadata["rows"] == 44
     assert source.metadata["fingerprint"]  # a non-empty config fingerprint
+    assert seen["force"] is False  # threaded from cfg.data.force_rebuild (default False)
 
 
 def test_ensure_prepped_component(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        steps, "ensure_prepped_step", lambda _cfg: steps.TableRef("p.ds.prepped__x", 90)
-    )
+    seen: dict[str, Any] = {}
+
+    def fake(_cfg: object, *, force: bool) -> steps.TableRef:
+        seen["force"] = force
+        return steps.TableRef("p.ds.prepped__x", 90)
+
+    monkeypatch.setattr(steps, "ensure_prepped_step", fake)
     prepped = _FakeDatasetArtifact()
     out = COMPS.ensure_prepped.python_func(
         config_json=CFG_JSON, source=_FakeDatasetArtifact(), prepped=prepped
@@ -111,6 +122,22 @@ def test_ensure_prepped_component(monkeypatch: pytest.MonkeyPatch) -> None:
     assert prepped.uri == "bq://p.ds.prepped__x"
     assert prepped.metadata["rows"] == 90
     assert prepped.metadata["fingerprint"]
+    assert seen["force"] is False  # threaded from cfg.data.force_rebuild (default False)
+
+
+def test_ensure_source_component_forwards_force_rebuild(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: dict[str, Any] = {}
+
+    def fake(_cfg: object, *, force: bool) -> steps.TableRef:
+        seen["force"] = force
+        return steps.TableRef("p.ds.src__x", 1)
+
+    monkeypatch.setattr(steps, "ensure_source_step", fake)
+    forced = CFG.model_copy(update={"data": CFG.data.model_copy(update={"force_rebuild": True})})
+    COMPS.ensure_source.python_func(
+        config_json=forced.model_dump_json(), source=_FakeDatasetArtifact()
+    )
+    assert seen["force"] is True
 
 
 def test_build_tables_component(monkeypatch: pytest.MonkeyPatch) -> None:
