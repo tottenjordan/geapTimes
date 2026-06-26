@@ -77,6 +77,42 @@ def test_with_automl_enabled_appends_when_absent() -> None:
     assert automl[0].enabled is True
 
 
+# -- with_automl_disabled -------------------------------------------------------------------------
+def test_with_automl_disabled_flips_existing_model() -> None:
+    enabled = _cfg(
+        models=[
+            {"name": "timesfm", "params": {"type": "timesfm"}},
+            {"name": "automl", "enabled": True, "params": {"type": "automl"}},
+        ]
+    )
+    out = submit.with_automl_disabled(enabled)
+    automl = next(m for m in out.models if m.params.type == "automl")
+    assert automl.enabled is False
+
+
+def test_with_automl_disabled_does_not_mutate_input() -> None:
+    enabled = _cfg(
+        models=[
+            {"name": "timesfm", "params": {"type": "timesfm"}},
+            {"name": "automl", "enabled": True, "params": {"type": "automl"}},
+        ]
+    )
+    submit.with_automl_disabled(enabled)
+    original_automl = next(m for m in enabled.models if m.params.type == "automl")
+    assert original_automl.enabled is True  # input untouched
+
+
+def test_with_automl_disabled_noop_when_absent() -> None:
+    cfg = _cfg(
+        models=[
+            {"name": "timesfm", "params": {"type": "timesfm"}},
+            {"name": "bqml_arima_xreg", "params": {"type": "bqml"}},
+        ]
+    )
+    out = submit.with_automl_disabled(cfg)
+    assert [m.params.type for m in out.models] == ["timesfm", "bqml"]
+
+
 # -- submit_pipeline ------------------------------------------------------------------------------
 def test_submit_pipeline_compiles_and_submits(tmp_path: Path) -> None:
     aip = _FakeAip()
@@ -188,7 +224,51 @@ def test_cli_dry_run_compiles_without_submit(tmp_path: Path, caplog) -> None:
     assert "not submitted" in " ".join(caplog.messages)
 
 
-def _write_config(tmp_path: Path) -> str:
+def _write_config(tmp_path: Path, config: dict | None = None) -> str:
     path = tmp_path / "config.yaml"
-    path.write_text(yaml.safe_dump(BASE), encoding="utf-8")
+    path.write_text(yaml.safe_dump(config or BASE), encoding="utf-8")
     return str(path)
+
+
+def _run_backend_executors(spec_path: Path) -> set[str]:
+    spec = yaml.safe_load(spec_path.read_text(encoding="utf-8"))
+    execs = spec["deploymentSpec"]["executors"]
+    return {e for e in execs if e.startswith("exec-run-backend")}
+
+
+def test_cli_disable_automl_drops_backend(tmp_path: Path) -> None:
+    cfg = {
+        **BASE,
+        "models": [
+            {"name": "timesfm", "params": {"type": "timesfm"}},
+            {"name": "bqml_arima_xreg", "params": {"type": "bqml"}},
+            {"name": "automl", "enabled": True, "params": {"type": "automl"}},
+        ],
+    }
+    out = tmp_path / "compiled.yaml"
+    rc = submit.main(
+        [
+            "--config",
+            _write_config(tmp_path, cfg),
+            "--disable-automl",
+            "--dry-run",
+            "--output",
+            str(out),
+        ]
+    )
+    assert rc == 0
+    # only bqml runs in-process; the AutoML run-backend is gone (timesfm is served, not run-backend)
+    assert _run_backend_executors(out) == {"exec-run-backend"}
+
+
+def test_cli_enable_and_disable_are_mutually_exclusive(tmp_path: Path) -> None:
+    with pytest.raises(SystemExit):
+        submit.main(
+            [
+                "--config",
+                _write_config(tmp_path),
+                "--enable-automl",
+                "--disable-automl",
+                "--dry-run",
+            ]
+        )

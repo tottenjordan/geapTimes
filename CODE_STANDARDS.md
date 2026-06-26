@@ -46,6 +46,16 @@ submit + pod startup (~5 min per iteration). Catch those failures cheaply instea
   the deployed pipeline.
 - Every new server-side error must be fixed **and** added to the static validator + a test, so the
   slow cloud loop is paid at most once per rule.
+- **Iterate on the pipeline without the AutoML cost.** AutoML training dominates the comparison
+  run's wall-clock (~1–2 h) and is the only billable-compute backend, while every other task
+  finishes in minutes. When testing pipeline mechanics (a new image, artifact wiring, GCPC
+  components), submit with `--disable-automl` to skip it; submit the full three-backend comparison
+  (`--enable-automl`, or a config with AutoML enabled) only when you specifically need AutoML
+  results:
+  ```bash
+  GCP_PROJECT=hybrid-vertex uv run python -m geaptimes.pipelines.submit \
+      --config config/comparison_config.yaml --disable-automl
+  ```
 
 ## Source layout
 
