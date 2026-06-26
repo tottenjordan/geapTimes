@@ -71,12 +71,71 @@ uv run python scripts/setup_gcp.py --config config/base_config.yaml --dry-run
 > Want zero-setup sharing instead? The notebooks can be made Colab-friendly by adding a guarded
 > first cell that `pip install`s the package and runs `google.colab.auth` — see CODE_STANDARDS.
 
-## Layout
+## Repository structure
 
 ```
-config/          # base_config.yaml + Pydantic schemas (the typed contract)
-data_notebooks/  # data exploration & prep
-scripts/         # GCP setup, experiment CLI
-src/geaptimes/   # package: data, models, pipelines, evaluation, utils
-docs/notes/      # durable design notes
+geapTimes/
+├── config/
+│   └── base_config.yaml              # the YAML experiment definition (validated into typed config)
+├── src/geaptimes/                    # the installable package
+│   ├── schemas.py                    # Pydantic v2 models — the typed config contract
+│   ├── naming.py                     # deterministic dataset/table/model/bucket names
+│   ├── constants.py                  # shared constants (resource labels, quantiles, …)
+│   ├── gcp.py                        # GCP client/session helpers
+│   ├── data/
+│   │   └── queries.py                # BigQuery prep/train/infer SQL builders
+│   ├── models/                       # the model factory + forecaster backends
+│   │   ├── base.py                   # Forecaster ABC, ForecastResult, column constants
+│   │   ├── factory.py                # ForecastFactory.from_config -> list[Forecaster]
+│   │   ├── timesfm.py                # TimesFM 2.5 (in-process)
+│   │   ├── bqml.py                   # BigQuery ML ARIMA_PLUS_XREG (server-side SQL)
+│   │   └── automl.py                 # Vertex AutoML Forecasting (managed job; default-off)
+│   ├── experiment/                   # the experiment-tracking + DOE harness
+│   │   ├── doe.py                    # Design-of-Experiments matrix expansion
+│   │   ├── metrics.py                # point metrics (MAE/RMSE) vs TEST actuals
+│   │   ├── tracking.py               # Vertex AI Experiments + GCS artifact sink
+│   │   └── runner.py                 # run_experiment: DOE × models -> tracked runs
+│   └── utils/
+│       └── logger.py                 # structured logging
+├── data_notebooks/                   # demo notebooks (shared `geaptimes` kernel)
+│   ├── 01_citibike_prep.ipynb        # data exploration & prep
+│   ├── 02_timesfm_local.ipynb        # local TimesFM forecasting
+│   └── 03_experiment_tracking.ipynb  # DOE + experiment-tracking demo
+├── scripts/                          # GCP setup + standalone demos
+│   ├── setup_gcp.py                  # provision datasets/buckets/labels
+│   └── demo_timesfm.py
+├── tests/                            # pytest suite (offline; cloud seams injected)
+├── docs/
+│   ├── plans/                        # immutable approved per-stage plans
+│   └── notes/                        # durable cross-session design notes
+├── PLANS.md                          # living roadmap + active-stage tracker
+├── CODE_STANDARDS.md                 # authoritative tooling/layout/commit policy
+└── pyproject.toml                    # uv-managed project + tool config
 ```
+
+## Documentation & references
+
+**Platform & models**
+
+- **GEAP / Vertex AI AutoML Forecasting** —
+  [overview](https://docs.cloud.google.com/gemini-enterprise-agent-platform/machine-learning/tabular-data/forecasting/overview)
+- **BigQuery ML forecasting** —
+  [overview](https://docs.cloud.google.com/bigquery/docs/forecasting-overview) ·
+  [`ARIMA_PLUS_XREG` model syntax](https://docs.cloud.google.com/bigquery/docs/reference/standard-sql/bigqueryml-syntax-create-time-series) ·
+  [multivariate forecasting tutorial](https://docs.cloud.google.com/bigquery/docs/arima-plus-xreg-single-time-series-forecasting-tutorial)
+- **TimesFM 2.5** —
+  [HuggingFace model card](https://huggingface.co/google/timesfm-2.5-200m-pytorch) ·
+  [GitHub repo](https://github.com/google-research/timesfm)
+- **Vertex AI Experiments** (run tracking / params / metrics) —
+  [docs](https://docs.cloud.google.com/vertex-ai/docs/experiments/intro-vertex-ai-experiments)
+- **Public datasets** —
+  [Citibike trips](https://console.cloud.google.com/marketplace/details/city-of-new-york/nyc-citi-bike) ·
+  [NOAA GSOD weather](https://console.cloud.google.com/marketplace/details/noaa-public/gsod)
+
+**Tooling**
+
+- [`uv`](https://docs.astral.sh/uv/) packaging ·
+  [`ruff`](https://docs.astral.sh/ruff/) lint+format ·
+  [`ty`](https://github.com/astral-sh/ty) type checker ·
+  [Pydantic v2](https://docs.pydantic.dev/latest/) ·
+  [pytest](https://docs.pytest.org/)
