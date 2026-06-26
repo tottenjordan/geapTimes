@@ -271,7 +271,8 @@ Folds in surviving 4A items. Ordered by user priority (lineage first) + dependen
 | P2.4 | Richer artifacts (4A.4): `Output[Metrics]` on score, `Output[Markdown]` ranking on compare; *candidate:* replace base64 fan-in with artifact fan-in | done | 002812c |
 | P2.5 | force_rebuild (4A.5) + machine right-size (4A.8, e2-standard-4→e2-standard-2) | done | ea9cad4 |
 | P2.6 | Docs: hybrid-GCPC decision in CODE_STANDARDS + CLAUDE | done | 8374006 |
-| P2.7 | **One full AutoML run** = redesign acceptance + first live validation of `e8a0f5f` read fix + train/infer cache-reuse → STOP | pending | |
+| P2.7a | **Cheap `--disable-automl` live run** — first live validation of P2.3 GCPC serving + P2.1/P2.2 data-prep+lineage + P2.4 artifacts + P2.5 sizing (BQML+TimesFM only) | done | c03b9ff, bf873d2, 9e8e581 |
+| P2.7b | **One full AutoML run** = redesign acceptance + first live validation of `e8a0f5f` read fix + train/infer cache-reuse → Phase 2 STOP | pending | |
 
 **P2.3 design notes (full-hybrid, approved 2026-06-26):** resolver dry-run clean (gcpc 2.22.0 adds only
 itself; kfp 2.16.1 / aiplatform 1.158.0 satisfy). GCPC ops run in Google-managed images → no runtime
@@ -284,7 +285,11 @@ artifacts, which an `ExitHandler` exit task can't consume, so `teardown_serving`
 stays custom, now consuming the `VertexEndpoint` artifact's `resourceName` + ordered `.after(deploy)`.
 (3) The `prepped` lineage edge moved from register→predict (the served model reads prepped at predict
 time). (4) Batch path also uses `ModelUploadOp` (custom `batch_predict` consumes the `VertexModel`
-artifact). Live validation (incl. the `artifact_uri=""` baked-container assumption) deferred to P2.7.
+artifact). **Correction (live-validated in P2.7a):** the `artifact_uri=""` baked-container assumption
+was **wrong** — the GCPC `importer` rejects an empty URI (`INVALID_ARGUMENT`, "Failed to get the URI
+of the artifact to import"). Fixed with `config.timesfm_artifact_uri` (a stable empty GCS prefix
+`gs://…/serving/<model>/`; Vertex copies its empty contents to `AIP_STORAGE_URI`, the baked container
+ignores it). See the P2.7a notes below.
 
 **P2.5 design notes (2026-06-26):** Two independent sub-features. (1) **force_rebuild (4A.5):**
 `DataConfig.force_rebuild: bool = False` + `submit.with_data_rebuild_forced` (model_dump→patch→
@@ -316,6 +321,26 @@ pods only). `CLAUDE.md` gets a one-paragraph pointer to that section. Reviews-as
 ([[sdd-reviews-as-gates]]): accuracy reviewer verified every claim against the code — all ACCURATE bar
 one wording nit (kfp 2.16.1 is the *locked* version, constrained `>=2,<3` in pyproject, not
 hard-pinned), fixed before commit. Docs-only; offline gate still green (175 passed).
+
+**P2.7a design notes (2026-06-26):** First live run of the never-before-executed P2.3 GCPC serving
+path, `--disable-automl` (BQML + TimesFM only) to skip the ~2.5h billable AutoML training. Required a
+runtime image rebuild (components import `geaptimes` from the base image; digest `86a6e6dc…`). Two
+live bugs found and fixed: (1) **importer `artifact_uri=""` rejected** — the P2.3 baked-container
+assumption was wrong; fixed with `config.timesfm_artifact_uri` (empty GCS prefix) + a `.keep`
+placeholder object. (2) **model-deploy 404 on a cached dead endpoint** — a cached `endpoint-create`
+returned the prior run's endpoint that its ExitHandler teardown had already deleted; root cause is the
+**KFP/Vertex caching serialization gotcha** (`set_caching_options(False)` → empty `cachingOptions` →
+Vertex falls back to the pipeline-level default). Hot-fixed the run with pipeline-level
+`enable_caching=False`; the durable fix inverts the design (`9e8e581`): pipeline-level always off,
+producers opt back in per-task with explicit `True`, plus a `--no-cache` flag. **Run
+`…-20260626155800` SUCCEEDED** end-to-end: winner `bqml_arima_xreg` (MAE 77.72 / RMSE 101.72) vs
+`timesfm` (85.51 / 113.65) — matches the Stage 3 baseline (behavior-preserving redesign); transient
+endpoint torn down (no strand); P2.4 Markdown ranking + comparison JSON correct. Confirms there is **no
+serving-container bug** — both earlier deploy failures were the cached-dead-endpoint 404. Reviews-as-
+gates ([[sdd-reviews-as-gates]]): caching-redesign reviewer flagged the importer `--no-cache`
+consistency gap (importer defaults to cacheable), fixed before the gate went green (181 passed). Full
+live-run writeup in `docs/notes/stage-4-managed-pipelines-live-run.md`. **P2.7b (one full AutoML run)
+is the only item left before the Phase 2 STOP.**
 
 **P2.4 design notes (2026-06-26):** `score_and_track` now emits `Output[Metrics]` (per-backend MAE /
 RMSE scalars, via `metrics.log_metric`) shown on the task in the Vertex Pipelines UI — in addition to
