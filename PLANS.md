@@ -54,7 +54,7 @@ evaluation + the polished CLI remain in Stage 5.
 | 4.4 | `models/automl.py` — finish predict path (`_read_predictions` output read + `_flatten_automl_output`) | done | `5f0323b` |
 | 4.5 | `pipelines/{config,steps}.py` — pure pipeline helpers + injected-seam step functions | done | `a429bdb` |
 | 4.6 | `pipelines/{components,pipeline,compile}.py` — KFP components + comparison DAG + compile; add `kfp` | done | `82cafda` |
-| 4.7 | `pipelines/container/{Dockerfile,cloudbuild.yaml}` + `setup_gcp.py` AR repo + `requirements.txt` | pending | — |
+| 4.7 | `pipelines/container/{Dockerfile,cloudbuild.yaml}` + `setup_gcp.py` AR repo + `requirements.txt` | done | `2802b12` |
 | 4.8 | `pipelines/submit.py` — submit `PipelineJob` + `--enable-automl` override | pending | — |
 | 4.9 | Live comparison run on `hybrid-vertex` (TimesFM + BQML + AutoML floor) + notes | pending | — |
 
@@ -106,7 +106,14 @@ assembling build_tables → {bqml, automl in-process; timesfm served (endpoint|b
 
 ### 4.7 Container + Cloud Build
 One `geaptimes` runtime image (baked TimesFM checkpoint, serving CMD) + `cloudbuild.yaml` (push to
-labelled AR repo); regen `requirements.txt`; `setup_gcp.py` ensures the AR repo.
+labelled AR repo); regen `requirements.txt`; `setup_gcp.py` ensures the AR repo. **Offline files
+done** (`2802b12`); the live `gcloud builds submit` (image build + digest record) runs in 4.9.
+
+**Build-dependency decision (recorded):** the image installs **CPU-only torch** from the PyTorch CPU
+index, then the project from **public PyPI** — deliberately *not* `uv.lock`, which pins a CUDA torch
+(86 nvidia-* pkgs, ~6 GB) from an internal mirror (`artifact-foundry-prod`) that Cloud Build workers
+can't reach. `timesfm[torch]` only needs `torch>=2.0.0`, so CPU satisfies it. AR repo provisioning
+shells out to `gcloud` (injectable runner) rather than adding an admin SDK dep to the runtime image.
 
 ### 4.8 Submit + AutoML-enable override
 `submit_pipeline(cfg, *, aiplatform)` compiles + submits a `PipelineJob` under the experiment;
