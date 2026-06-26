@@ -268,7 +268,7 @@ Folds in surviving 4A items. Ordered by user priority (lineage first) + dependen
 | P2.1 | **Data→serving lineage (4A.2+4A.3):** `build_tables` emits table-ref `Dataset` artifacts (`bq://` + config fingerprint + rows); wire into train/infer **and** TimesFM serving steps (closes edge-less serving branch) | done | be5383d |
 | P2.2 | Self-bootstrapping data prep (4A.1): `ensure_source`/`ensure_prepped` front steps, existence + fingerprint guard | done | af65db6 |
 | P2.3 | Hybrid GCPC serving (4A.6): `gcpc==2.22.0` after resolver dry-run; ModelUpload/EndpointCreate/ModelDeploy; AutoML+BQML stay custom | done | a8f06de |
-| P2.4 | Richer artifacts (4A.4): `Output[Metrics]` on score, `Output[Markdown]` ranking on compare; *candidate:* replace base64 fan-in with artifact fan-in | done | |
+| P2.4 | Richer artifacts (4A.4): `Output[Metrics]` on score, `Output[Markdown]` ranking on compare; *candidate:* replace base64 fan-in with artifact fan-in | done | 002812c |
 | P2.5 | force_rebuild (4A.5) + machine right-size (4A.8, e2-standard-4→e2-standard-2) | pending | |
 | P2.6 | Docs: hybrid-GCPC decision in CODE_STANDARDS + CLAUDE | pending | |
 | P2.7 | **One full AutoML run** = redesign acceptance + first live validation of `e8a0f5f` read fix + train/infer cache-reuse → STOP | pending | |
