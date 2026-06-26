@@ -87,3 +87,23 @@ execution:
 # of all axes (variants) x enabled models. Empty axes -> a single run (the base config).
 doe:
   axes: {} # e.g. {forecast.horizon: [7, 14], data.station_filter.top_n: [10, 25]}
+
+# Vertex AI managed-pipeline (KFP) settings. Used when execution.target = cloud_pipeline.
+pipeline:
+  pipeline_root: null # null -> gs://<gcs_bucket>/pipeline_root/<experiment_name>
+  image:
+    repo: geaptimes
+    image_name: geaptimes-runtime
+    image_tag: latest
+    location: null # null -> project.region
+  serving:
+    mode: endpoint # endpoint | batch (TimesFM cloud inference)
+    keep_deployed: false # false -> tear down endpoint after artifacts saved (cost-safe)
+    machine_type: n1-standard-4
+    min_replica_count: 1
+    max_replica_count: 1
+    batch_machine_type: n1-standard-4
+    batch_starting_replica_count: 1
+    batch_max_replica_count: 1
+  component_machine_type: e2-standard-4
+  enable_caching: true

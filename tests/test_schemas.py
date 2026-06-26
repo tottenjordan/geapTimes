@@ -106,3 +106,50 @@ def test_automl_budget_must_be_positive() -> None:
     }
     with pytest.raises(ValidationError, match="budget_milli_node_hours"):
         ExperimentConfig.model_validate(bad)
+
+
+def test_pipeline_defaults() -> None:
+    cfg = ExperimentConfig.model_validate(VALID)
+    assert cfg.pipeline.serving.mode == "endpoint"
+    assert cfg.pipeline.serving.keep_deployed is False
+    assert cfg.pipeline.enable_caching is True
+    assert cfg.pipeline.image.repo == "geaptimes"
+
+
+def test_pipeline_image_uri_derivation() -> None:
+    cfg = ExperimentConfig.model_validate(VALID)
+    uri = cfg.pipeline.image.image_uri(project_id="proj", region="us-central1")
+    assert uri == "us-central1-docker.pkg.dev/proj/geaptimes/geaptimes-runtime:latest"
+
+
+def test_pipeline_image_uri_honors_explicit_location() -> None:
+    cfg = ExperimentConfig.model_validate({**VALID, "pipeline": {"image": {"location": "us"}}})
+    uri = cfg.pipeline.image.image_uri(project_id="proj", region="us-central1")
+    assert uri == "us-docker.pkg.dev/proj/geaptimes/geaptimes-runtime:latest"
+
+
+def test_pipeline_root_derivation_default_and_override() -> None:
+    cfg = ExperimentConfig.model_validate(VALID)
+    assert (
+        cfg.pipeline.resolved_pipeline_root(gcs_bucket="bkt", experiment_name="exp")
+        == "gs://bkt/pipeline_root/exp"
+    )
+    override = ExperimentConfig.model_validate(
+        {**VALID, "pipeline": {"pipeline_root": "gs://custom/root"}}
+    )
+    assert (
+        override.pipeline.resolved_pipeline_root(gcs_bucket="bkt", experiment_name="exp")
+        == "gs://custom/root"
+    )
+
+
+def test_pipeline_invalid_serving_mode_rejected() -> None:
+    bad = {**VALID, "pipeline": {"serving": {"mode": "streaming"}}}
+    with pytest.raises(ValidationError):
+        ExperimentConfig.model_validate(bad)
+
+
+def test_pipeline_replica_counts_must_be_positive() -> None:
+    bad = {**VALID, "pipeline": {"serving": {"min_replica_count": 0}}}
+    with pytest.raises(ValidationError, match="replica counts"):
+        ExperimentConfig.model_validate(bad)

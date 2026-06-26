@@ -17,8 +17,8 @@ Status legend: `pending` · `in progress` · `done` · `blocked`
 |-------|-------|--------|
 | 1 | Data Architecture & Config Schema | done |
 | 2 | Model Factory & Forecaster Abstractions | done |
-| 3 | Experiment Tracking & DOE Framework | items done — STOP (awaiting approval) |
-| 4 | Managed Pipelines & Cloud Orchestration | pending |
+| 3 | Experiment Tracking & DOE Framework | done |
+| 4 | Managed Pipelines & Cloud Orchestration | in progress |
 | 5 | Standardized Evaluation & Entry Point | pending |
 
 **Stage 2** — `src/geaptimes/models/`: `base.py` (ABC), `factory.py`, `automl.py`,
@@ -32,7 +32,88 @@ container (Model Garden → endpoint); side-by-side comparison DAG.
 
 ---
 
-## Tier 2 — Stage 3 (Experiment Tracking & DOE Framework) — ACTIVE
+## Tier 2 — Stage 4 (Managed Pipelines & Cloud Orchestration) — ACTIVE
+
+The Stage 3 in-process `run_experiment` loop is lifted into a managed **KFP v2 pipeline** on Vertex
+AI, and a custom-container **TimesFM** model is served via an online **endpoint** (default) or
+**batch** prediction (selectable via `pipeline.serving.mode`; teardown is the `keep_deployed`
+switch, default transient). The deliverable is a **side-by-side comparison DAG** running all three
+backends (TimesFM + BQML + AutoML at the floor budget) on identical backtests, emitting a comparison
+artifact + winner and one Vertex `ExperimentRun` per model under `citibike-daily-baseline`. One
+`geaptimes` runtime image (Artifact Registry, built via Cloud Build) serves double duty as the
+TimesFM serving container and the KFP component base image. Every cloud seam is injected so logic
+unit-tests offline (incl. a pipeline-compile graph test); the live `PipelineJob` — which incurs one
+budgeted AutoML run + a transient endpoint deploy — is a separate, explicit step. Full standardized
+evaluation + the polished CLI remain in Stage 5.
+
+| # | Item | Status | Commit |
+|---|------|--------|--------|
+| 4.1 | `schemas.py` + `base_config.yaml` + `comparison_config.yaml` — `pipeline:` block (serving mode/teardown, AR image, pipeline_root) | pending | — |
+| 4.2 | `models/timesfm_core.py` — factor TimesFM core (`compile_timesfm`/`forecast_arrays`/`rows_from_forecast`); refactor `timesfm.py` | pending | — |
+| 4.3 | `pipelines/serving/{predictor,app}.py` — TimesFM serving predictor + Vertex-contract web app | pending | — |
+| 4.4 | `models/automl.py` — finish predict path (`_read_predictions` output read + `_flatten_automl_output`) | pending | — |
+| 4.5 | `pipelines/{config,steps}.py` — pure pipeline helpers + injected-seam step functions | pending | — |
+| 4.6 | `pipelines/{components,pipeline,compile}.py` — KFP components + comparison DAG + compile; add `kfp` | pending | — |
+| 4.7 | `pipelines/container/{Dockerfile,cloudbuild.yaml}` + `setup_gcp.py` AR repo + `requirements.txt` | pending | — |
+| 4.8 | `pipelines/submit.py` — submit `PipelineJob` + `--enable-automl` override | pending | — |
+| 4.9 | Live comparison run on `hybrid-vertex` (TimesFM + BQML + AutoML floor) + notes | pending | — |
+
+### 4.1 Schema + config
+`ArtifactRegistryConfig` + `ServingConfig` (`mode: endpoint\|batch`, `keep_deployed`, machine/replica
+knobs) + `PipelineConfig` (`pipeline_root`, `image`, `serving`, `component_machine_type`,
+`enable_caching`); `ExperimentConfig.pipeline`. `base_config.yaml` gets a `pipeline:` block (AutoML
+stays disabled); new `comparison_config.yaml` enables all three at floor budget under
+`citibike-daily-baseline` / `target: cloud_pipeline`.
+
+### 4.2 Factor TimesFM core
+Behavior-preserving extraction of compile + `model.forecast` + tensor→`PREDICTION_COLUMNS` mapping
+into `models/timesfm_core.py`, reused by `TimesFMForecaster.predict()` and the serving predictor.
+
+### 4.3 Serving predictor + app
+`TimesFMPredictor` (load+compile once; `predict(instances)→responses` via the core) + a Vertex
+custom-container web app (`/health`, `/predict`, `AIP_*` env). Offline-tested with a fake model +
+test client (no torch, no server).
+
+### 4.4 AutoML predict path
+Implement the batch-prediction output-table read + nested-struct flatten
+(`predicted_<target>.{value,quantile_values,quantile_predictions}` → `PREDICTION_COLUMNS`), keeping
+the injected `prediction_reader` seam. Live field names confirmed in 4.9.
+
+### 4.5 Pipeline helpers + steps
+`config.py` pure derivations (image URI, pipeline_root, display names); `steps.py` plain step
+functions (build tables, per-backend run via `ForecastFactory`+`point_metrics`+`ExperimentTracker`,
+register/deploy/undeploy/endpoint-predict/batch-predict, compare→winner) with injected seams.
+
+### 4.6 KFP components + DAG + compile
+`@dsl.component` shells over the steps (cfg reconstructed from a JSON param); `@dsl.pipeline` with
+`dsl.Condition` on serving mode + `keep_deployed` and a `dsl.ExitHandler` around serve+teardown;
+`compile_pipeline()` (pure). Compile-to-YAML graph test. Adds `kfp>=2,<3`.
+
+### 4.7 Container + Cloud Build
+One `geaptimes` runtime image (baked TimesFM checkpoint, serving CMD) + `cloudbuild.yaml` (push to
+labelled AR repo); regen `requirements.txt`; `setup_gcp.py` ensures the AR repo.
+
+### 4.8 Submit + AutoML-enable override
+`submit_pipeline(cfg, *, aiplatform)` compiles + submits a `PipelineJob` under the experiment;
+`--enable-automl` flips AutoML on via a `model_dump`→patch→`model_validate` override.
+
+### 4.9 Live run + notes
+Cloud Build the image, submit the comparison `PipelineJob`; confirm success, three `ExperimentRun`s,
+transient endpoint teardown, floor-budget AutoML run, and comparison artifact + winner; record in
+`docs/notes/stage-4-managed-pipelines-live-run.md`.
+
+### Stage 4 verification
+- **Offline** (gating): `uv run ruff check .` → `uv run ruff format --check .` → `uv run ty check`
+  → `uv run pytest`; then `compile_pipeline()` emits the DAG YAML and `comparison_config.yaml`
+  validates — no cloud calls.
+- **Live** (manual, auth): Cloud Build the image, submit the comparison `PipelineJob`, confirm
+  success + teardown + AutoML floor run + comparison artifact, record in `docs/notes/`.
+- **STOP** checkpoint: present the config switches, the factored core + serving container, the
+  AutoML predict path, the KFP components + comparison DAG, the submit path, and the live results.
+
+---
+
+## Tier 2 — Stage 3 (Experiment Tracking & DOE Framework) — COMPLETE
 
 A config-driven **Design-of-Experiments** matrix expands one base config into a grid of variants;
 the **runner** drives the Stage 2 forecasters (their first live execution) and logs each run to

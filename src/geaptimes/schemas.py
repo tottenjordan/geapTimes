@@ -201,6 +201,73 @@ class DOEConfig(_Base):
     axes: dict[str, list[Any]] = Field(default_factory=dict)
 
 
+class ArtifactRegistryConfig(_Base):
+    """Artifact Registry coordinates for the geapTimes runtime container image.
+
+    The image serves double duty: the TimesFM custom serving container and the base image for the
+    KFP pipeline components. ``location`` defaults to ``project.region`` when unset.
+    """
+
+    repo: str = "geaptimes"
+    image_name: str = "geaptimes-runtime"
+    image_tag: str = "latest"
+    location: str | None = None
+
+    def image_uri(self, *, project_id: str, region: str) -> str:
+        """Resolve the fully-qualified Artifact Registry image URI."""
+        location = self.location or region
+        return (
+            f"{location}-docker.pkg.dev/{project_id}/{self.repo}/{self.image_name}:{self.image_tag}"
+        )
+
+
+class ServingConfig(_Base):
+    """How the custom-container TimesFM model is served in the pipeline.
+
+    ``mode`` selects an online endpoint (default) or a batch-prediction job. ``keep_deployed``
+    is the cost switch: ``False`` (default) tears the endpoint down after artifacts are saved;
+    ``True`` leaves it running.
+    """
+
+    mode: Literal["endpoint", "batch"] = "endpoint"
+    keep_deployed: bool = False
+    machine_type: str = "n1-standard-4"
+    min_replica_count: int = 1
+    max_replica_count: int = 1
+    batch_machine_type: str = "n1-standard-4"
+    batch_starting_replica_count: int = 1
+    batch_max_replica_count: int = 1
+
+    @field_validator(
+        "min_replica_count",
+        "max_replica_count",
+        "batch_starting_replica_count",
+        "batch_max_replica_count",
+    )
+    @classmethod
+    def _positive(cls, v: int) -> int:
+        if v <= 0:
+            msg = "serving replica counts must be > 0"
+            raise ValueError(msg)
+        return v
+
+
+class PipelineConfig(_Base):
+    """Vertex AI managed-pipeline (KFP) settings for cloud orchestration."""
+
+    pipeline_root: str | None = None
+    image: ArtifactRegistryConfig = Field(default_factory=ArtifactRegistryConfig)
+    serving: ServingConfig = Field(default_factory=ServingConfig)
+    component_machine_type: str = "e2-standard-4"
+    enable_caching: bool = True
+
+    def resolved_pipeline_root(self, *, gcs_bucket: str, experiment_name: str) -> str:
+        """Resolve the pipeline root, defaulting to a per-experiment path in the GCS bucket."""
+        if self.pipeline_root:
+            return self.pipeline_root
+        return f"gs://{gcs_bucket}/pipeline_root/{experiment_name}"
+
+
 class ExperimentConfig(_Base):
     """Root experiment config — the typed contract consumed across geapTimes."""
 
@@ -210,6 +277,7 @@ class ExperimentConfig(_Base):
     models: list[ModelConfig]
     execution: ExecutionConfig
     doe: DOEConfig = Field(default_factory=DOEConfig)
+    pipeline: PipelineConfig = Field(default_factory=PipelineConfig)
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> "ExperimentConfig":
