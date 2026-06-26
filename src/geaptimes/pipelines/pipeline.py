@@ -67,6 +67,10 @@ def build_pipeline(cfg: "ExperimentConfig") -> "BaseComponent":  # noqa: PLR0915
     name = pipeline_name(cfg)
     default_config_json = cfg.model_dump_json()
     serving = cfg.pipeline.serving
+    # Producer caching is an explicit per-task opt-in: True renders ``cachingOptions.enableCache``
+    # in the IR, which survives serialization and caches on Vertex. The pipeline-level default is
+    # always submitted off (see submit_pipeline), so the ephemeral serving lifecycle -- which sets
+    # caching False (an empty cachingOptions that falls back to that off default) -- never caches.
     caching = cfg.pipeline.enable_caching
     in_process = _in_process_model_names(cfg)
     timesfm = _timesfm_enabled(cfg)
@@ -140,6 +144,10 @@ def build_pipeline(cfg: "ExperimentConfig") -> "BaseComponent":  # noqa: PLR0915
                 artifact_class=artifact_types.UnmanagedContainerModel,
                 metadata={"containerSpec": timesfm_container_spec(cfg)},
             )
+            # Deterministic producer (containerSpec fixed at compile): honor the producer-caching
+            # flag like the others. A KFP importer defaults to cacheable, so without this it would
+            # stay cached even under --no-cache.
+            container_spec.set_caching_options(caching)
             container_spec.set_display_name("timesfm:container-spec")
             register = ModelUploadOp(
                 project=cfg.project.id,

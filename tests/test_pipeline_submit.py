@@ -125,6 +125,18 @@ def test_with_data_rebuild_forced_does_not_mutate_input() -> None:
     assert base.data.force_rebuild is False  # input untouched
 
 
+# -- with_caching_disabled ------------------------------------------------------------------------
+def test_with_caching_disabled_sets_flag() -> None:
+    out = submit.with_caching_disabled(_cfg())
+    assert out.pipeline.enable_caching is False
+
+
+def test_with_caching_disabled_does_not_mutate_input() -> None:
+    base = _cfg()
+    submit.with_caching_disabled(base)
+    assert base.pipeline.enable_caching is True  # input untouched (default on)
+
+
 # -- submit_pipeline ------------------------------------------------------------------------------
 def test_submit_pipeline_compiles_and_submits(tmp_path: Path) -> None:
     aip = _FakeAip()
@@ -149,11 +161,12 @@ def test_submit_pipeline_compiles_and_submits(tmp_path: Path) -> None:
     assert job.submitted_experiment == "citibike-daily-baseline"
 
 
-def test_submit_pipeline_caching_override(tmp_path: Path) -> None:
+def test_submit_pipeline_pipeline_level_caching_always_off(tmp_path: Path) -> None:
+    # The Vertex pipeline-level enable_caching is always submitted False so that the ephemeral
+    # serving tasks (whose set_caching_options(False) serializes to an empty cachingOptions) fall
+    # back to off. Producers opt back in per-task at compile time, not via this submit knob.
     aip = _FakeAip()
-    job = submit.submit_pipeline(
-        _cfg(), aiplatform=aip, template_path=tmp_path / "p.yaml", enable_caching=False
-    )
+    job = submit.submit_pipeline(_cfg(), aiplatform=aip, template_path=tmp_path / "p.yaml")
     assert job.kwargs["enable_caching"] is False
 
 
@@ -285,6 +298,20 @@ def test_cli_force_data_rebuild_sets_config_flag(
     rc = submit.main(["--config", _write_config(tmp_path), "--force-data-rebuild"])
     assert rc == 0
     assert captured["cfg"].data.force_rebuild is True
+
+
+def test_cli_no_cache_disables_producer_caching(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, ExperimentConfig] = {}
+
+    def fake_submit(cfg: ExperimentConfig, **_kw: object) -> None:
+        captured["cfg"] = cfg
+
+    monkeypatch.setattr(submit, "submit_pipeline", fake_submit)
+    rc = submit.main(["--config", _write_config(tmp_path), "--no-cache"])
+    assert rc == 0
+    assert captured["cfg"].pipeline.enable_caching is False
 
 
 def test_cli_enable_and_disable_are_mutually_exclusive(tmp_path: Path) -> None:

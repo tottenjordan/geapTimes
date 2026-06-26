@@ -268,6 +268,14 @@ class PipelineConfig(_Base):
     # / Vertex API calls and wait, not heavy compute -- so the smaller e2-standard-2 is right-sized
     # (translated to CPU/memory limits in geaptimes.pipelines.config.component_resources).
     component_machine_type: str = "e2-standard-2"
+    # Whether deterministic *producers* (data-prep, build-tables, train/infer, model-upload, ...)
+    # reuse cached results across runs. Applied at compile time as an explicit
+    # ``set_caching_options(True)`` per producer task, which survives KFP->Vertex serialization. The
+    # ephemeral serving lifecycle (create/deploy/predict/teardown) is never cached regardless. Note
+    # the Vertex *pipeline-level* enable_caching is always submitted False (see submit_pipeline): a
+    # task's ``set_caching_options(False)`` serializes to an empty cachingOptions, so it must fall
+    # back to an off pipeline default -- otherwise a cached endpoint-create would hand back a
+    # torn-down endpoint. So this flag only turns producer caching *off*, never the lifecycle on.
     enable_caching: bool = True
 
     def resolved_pipeline_root(self, *, gcs_bucket: str, experiment_name: str) -> str:

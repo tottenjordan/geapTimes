@@ -75,6 +75,20 @@ def with_data_rebuild_forced(cfg: ExperimentConfig) -> ExperimentConfig:
     return ExperimentConfig.model_validate(data)
 
 
+def with_caching_disabled(cfg: ExperimentConfig) -> ExperimentConfig:
+    """Return a re-validated copy of *cfg* with deterministic-producer caching turned off.
+
+    Sets ``pipeline.enable_caching: false`` so the producer tasks (data-prep, build-tables,
+    train/infer, model-upload, ...) compile with no explicit ``set_caching_options(True)`` and thus
+    fall back to the always-off Vertex pipeline default -- a full from-scratch re-run. The ephemeral
+    serving lifecycle is never cached either way. Exposed as the ``--no-cache`` CLI flag. The input
+    config is never mutated.
+    """
+    data = cfg.model_dump()
+    data["pipeline"]["enable_caching"] = False
+    return ExperimentConfig.model_validate(data)
+
+
 def _lazy_aiplatform() -> Any:  # noqa: ANN401 - external SDK module
     from google.cloud import aiplatform  # noqa: PLC0415 - lazy cloud import
 
@@ -151,9 +165,17 @@ def submit_pipeline(
     *,
     aiplatform: Any = None,  # noqa: ANN401 - external SDK module, injected for tests
     template_path: "str | Path | None" = None,
-    enable_caching: bool | None = None,
 ) -> Any:  # noqa: ANN401 - returns the SDK PipelineJob
-    """Compile the comparison pipeline for *cfg* and submit it as a Vertex ``PipelineJob``."""
+    """Compile the comparison pipeline for *cfg* and submit it as a Vertex ``PipelineJob``.
+
+    Caching is a *compile-time, per-task* concern, not a submit knob: deterministic producers opt
+    in via an explicit ``set_caching_options(True)`` (driven by ``cfg.pipeline.enable_caching``;
+    turn it off with ``--no-cache`` / :func:`with_caching_disabled`). The Vertex *pipeline-level*
+    ``enable_caching`` is therefore always submitted ``False`` -- a task whose
+    ``set_caching_options(False)`` serializes to an empty ``cachingOptions`` (KFP omits false
+    booleans) must fall back to an off default, or the ephemeral endpoint-create caches and hands
+    the deploy a torn-down endpoint. Explicit ``True`` on producers survives and still caches.
+    """
     aip = aiplatform or _lazy_aiplatform()
     path = str(template_path) if template_path is not None else _default_template_path()
     compile_pipeline(cfg, path)
@@ -162,13 +184,12 @@ def submit_pipeline(
         location=cfg.project.region,
         staging_bucket=f"gs://{cfg.project.gcs_bucket}",
     )
-    caching = enable_caching if enable_caching is not None else cfg.pipeline.enable_caching
     job = aip.PipelineJob(
         display_name=pipeline_job_display_name(cfg),
         template_path=path,
         pipeline_root=pipeline_root(cfg),
         parameter_values={"config_json": cfg.model_dump_json()},
-        enable_caching=caching,
+        enable_caching=False,  # always off at pipeline level; producers opt back in per-task
         labels=resource_labels(),
     )
     job.submit(experiment=cfg.execution.experiment_name)
@@ -198,6 +219,12 @@ def main(argv: "list[str] | None" = None) -> int:
         help="Rebuild the source/prepped tables even if current (bypass the fingerprint guard).",
     )
     parser.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="Disable deterministic-producer caching for this run (full from-scratch re-run); the "
+        "ephemeral serving lifecycle is never cached regardless.",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Compile the pipeline only; do not submit (no cloud calls, no spend).",
@@ -220,6 +247,8 @@ def main(argv: "list[str] | None" = None) -> int:
         cfg = with_automl_disabled(cfg)
     if args.force_data_rebuild:
         cfg = with_data_rebuild_forced(cfg)
+    if args.no_cache:
+        cfg = with_caching_disabled(cfg)
 
     if args.preflight_automl:
         preflight_automl(cfg)

@@ -196,23 +196,43 @@ def test_table_artifacts_wire_data_lineage_into_every_backend(tmp_path: Path) ->
     assert "model-deploy" in tasks["endpoint-predict"]["dependentTasks"]
 
 
+def _enable_cache(tasks: dict[str, dict], task: str) -> bool:
+    return bool(tasks[task].get("cachingOptions", {}).get("enableCache"))
+
+
 def test_serving_lifecycle_tasks_are_never_cached(tmp_path: Path) -> None:
     """The ephemeral endpoint lifecycle must re-run every submit, not cache across runs.
 
     A cached endpoint-create would hand back an endpoint a prior run's ExitHandler teardown already
     deleted (and a cached teardown would strand a live endpoint). The deterministic producers stay
-    cacheable. Disabled caching renders as an empty ``cachingOptions``; enabled as ``enableCache``.
+    cacheable. Caching set False renders an *empty* ``cachingOptions`` (KFP omits false booleans);
+    set True renders ``cachingOptions.enableCache``. Runtime semantics close the gap: the empty
+    lifecycle options fall back to the always-off Vertex pipeline-level default (submit_pipeline
+    submits ``enable_caching=False``), while the producers' explicit True survives and caches.
     """
     tasks = _tasks_by_name(_cfg(ALL_THREE), tmp_path)
-
-    def cached(task: str) -> bool:
-        return bool(tasks[task].get("cachingOptions", {}).get("enableCache"))
-
     for task in ("endpoint-create", "model-deploy", "endpoint-predict", "teardown-serving"):
-        assert not cached(task), f"{task} must not be cached"
+        assert not _enable_cache(tasks, task), f"{task} must not be cached"
     # deterministic producers remain cacheable
     for task in ("build-tables", "model-upload", "importer", "train-backend"):
-        assert cached(task), f"{task} should stay cacheable"
+        assert _enable_cache(tasks, task), f"{task} should stay cacheable"
+
+
+def test_no_cache_config_makes_producers_uncacheable(tmp_path: Path) -> None:
+    """With caching disabled in config, producers carry no explicit ``enableCache`` either.
+
+    ``--no-cache`` (``with_caching_disabled``) sets ``pipeline.enable_caching=False``, so producers
+    compile to an empty ``cachingOptions`` just like the lifecycle -- the whole graph then relies on
+    the off pipeline-level default and re-runs from scratch. (Producers are cacheable only when the
+    flag is on; see ``test_serving_lifecycle_tasks_are_never_cached``.)
+    """
+    cfg = ExperimentConfig.model_validate(
+        {**BASE, "models": ALL_THREE, "pipeline": {"enable_caching": False}}
+    )
+    tasks = _tasks_by_name(cfg, tmp_path)
+    # importer included: a KFP importer defaults to cacheable, so it must honor the off flag too.
+    for task in ("build-tables", "model-upload", "importer", "train-backend", "endpoint-create"):
+        assert not _enable_cache(tasks, task), f"{task} must be uncacheable when caching is off"
 
 
 def test_richer_artifacts_metrics_and_markdown(tmp_path: Path) -> None:
