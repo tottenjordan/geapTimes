@@ -39,6 +39,11 @@ test = [
 [tool.uv]
 default-groups = ["dev", "test"]
 
+[tool.ty.src]
+# Notebooks are excluded from type checking (as with ruff); they depend on the optional `nb`
+# group (e.g. matplotlib) and keep heavy logic in the typed package.
+exclude = ["data_notebooks"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"

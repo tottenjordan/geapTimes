@@ -112,6 +112,9 @@ def test_fit_wires_dataset_job_and_run() -> None:
     fc.fit()
 
     assert fake.init_kwargs == {"project": "p", "location": "us-central1"}
+    assert fake.ds_kwargs is not None
+    assert fake.job_kwargs is not None
+    assert fake.run_kwargs is not None
     assert fake.ds_kwargs["bq_source"] == "bq://p.ds.citibike_daily_train__top25_h14_t14_v14"
     assert fake.ds_kwargs["labels"] == {"solution": "geaptimes"}
     assert fake.job_kwargs["display_name"] == "automl__top25_h14_t14_v14"

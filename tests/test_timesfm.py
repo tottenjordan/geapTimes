@@ -30,7 +30,7 @@ def _fake_frame(n_series: int = 2, days: int = 600) -> pd.DataFrame:
         df = pd.DataFrame(
             {
                 "start_station_name": f"station_{s}",
-                "date": dates.date,
+                "date": [d.date() for d in dates],
                 "num_trips": np.arange(days) + s,
             }
         )

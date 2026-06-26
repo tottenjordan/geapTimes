@@ -1,5 +1,7 @@
 """Offline tests for BQMLForecaster (SQL strings + result mapping; no BigQuery)."""
 
+from typing import cast
+
 import pandas as pd
 
 from geaptimes.models.base import PREDICTION_COLUMNS
@@ -8,7 +10,7 @@ from geaptimes.models.bqml import (
     build_create_model_sql,
     build_forecast_sql,
 )
-from geaptimes.schemas import ExperimentConfig
+from geaptimes.schemas import BQMLParams, ExperimentConfig
 
 COVS = ["temp", "prcp", "day_of_week", "month", "is_weekend"]
 
@@ -33,7 +35,7 @@ def test_create_model_sql_xreg() -> None:
     cfg = _cfg()  # holiday_region defaults to "US"
     sql = build_create_model_sql(
         cfg,
-        cfg.models[0].params,  # type: ignore[arg-type]
+        cast("BQMLParams", cfg.models[0].params),
         model_id="p.ds.m",
         train_table="p.ds.train",
     )
@@ -57,7 +59,7 @@ def test_create_model_sql_plain_arima_omits_regressors() -> None:
     )
     sql = build_create_model_sql(
         cfg,
-        cfg.models[0].params,  # type: ignore[arg-type]
+        cast("BQMLParams", cfg.models[0].params),
         model_id="p.ds.m",
         train_table="p.ds.train",
     )
@@ -72,7 +74,7 @@ def test_forecast_sql_xreg_joins_infer() -> None:
     cfg = _cfg()
     sql = build_forecast_sql(
         cfg,
-        cfg.models[0].params,  # type: ignore[arg-type]
+        cast("BQMLParams", cfg.models[0].params),
         model_id="p.ds.m",
         infer_table="p.ds.infer",
     )
@@ -89,7 +91,7 @@ def test_forecast_sql_plain_arima_has_no_future_table() -> None:
     )
     sql = build_forecast_sql(
         cfg,
-        cfg.models[0].params,  # type: ignore[arg-type]
+        cast("BQMLParams", cfg.models[0].params),
         model_id="p.ds.m",
         infer_table="p.ds.infer",
     )
