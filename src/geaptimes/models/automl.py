@@ -44,6 +44,8 @@ logger = get_logger(__name__)
 
 _GRANULARITY_UNIT = "day"
 _GRANULARITY_COUNT = 1
+# Vertex requires this objective whenever quantile forecasts are requested (which we always do).
+_QUANTILE_LOSS_OBJECTIVE = "minimize-quantile-loss"
 # Column emitted by Vertex batch prediction holding the point forecast (flattened by the reader).
 _PREDICTED_VALUE_COLUMN = "value"
 # Vertex forecasting batch output nests results in a STRUCT column named predicted_<target> with
@@ -72,13 +74,20 @@ class AutoMLForecaster(Forecaster):
         *,
         aiplatform: Any = None,  # noqa: ANN401 - external SDK module, injected for tests
         prediction_reader: "Callable[[], pd.DataFrame] | None" = None,
+        sync: bool = True,
     ) -> None:
         super().__init__(model_cfg, cfg)
         self.params: AutoMLParams = cast("AutoMLParams", model_cfg.params)
         self._aiplatform = aiplatform
         self._prediction_reader = prediction_reader
+        # sync=False returns from fit() as soon as the training pipeline is created (server-side
+        # column validation has run) without waiting for training -- used by the preflight check.
+        self._sync = sync
         self.display_name = f"{model_cfg.name}__{config_slug(cfg.data, cfg.forecast)}"
         self.model: Any = None
+        # Live handles captured by fit() so a preflight can cancel/clean up the launched resources.
+        self.training_job: Any = None
+        self.dataset: Any = None
 
     # -- config translation (pure, fully tested) --------------------------------------------
     def _bq_uri(self, role: str) -> str:
@@ -97,15 +106,17 @@ class AutoMLForecaster(Forecaster):
         Vertex Forecasting then rejects the job because the target carries no transformation
         ("The target column ... does not have a numeric or auto transformation."). So we build the
         specs ourselves, mirroring that default ``auto`` behaviour while *including* the target.
-        Columns are the union of the target and every role column (time, series id, and the three
-        covariate groups); duplicates collapse in the dict.
+        Columns are the union of the target, the time column, and the three covariate groups. The
+        time-series **identifier** column is deliberately excluded: Vertex rejects a transformation
+        on a column with no time-dependency role ("... have transformation but do not have any time
+        dependency properties"), and the identifier is a key, not a feature. Duplicates collapse in
+        the dict.
         """
         data = self.cfg.data
         covariates = data.covariates
         columns = [
             data.target_column,
             data.time_column,
-            data.series_column,
             *covariates.time_series_attribute_columns,
             *covariates.available_at_forecast_columns,
             *covariates.unavailable_at_forecast_columns,
@@ -130,12 +141,17 @@ class AutoMLForecaster(Forecaster):
         unavailable = list(covariates.unavailable_at_forecast_columns)
         if data.target_column not in unavailable:
             unavailable.append(data.target_column)
+        # Vertex requires the time column itself to be declared available-at-forecast (its future
+        # values -- the forecast dates -- are known at prediction time); add it if not listed.
+        available = list(covariates.available_at_forecast_columns)
+        if data.time_column not in available:
+            available.append(data.time_column)
         return {
             "target_column": data.target_column,
             "time_column": data.time_column,
             "time_series_identifier_column": data.series_column,
             "time_series_attribute_columns": list(covariates.time_series_attribute_columns),
-            "available_at_forecast_columns": list(covariates.available_at_forecast_columns),
+            "available_at_forecast_columns": available,
             "unavailable_at_forecast_columns": unavailable,
             "forecast_horizon": self.cfg.forecast.horizon,
             "context_window": self.params.context_window,
@@ -152,6 +168,50 @@ class AutoMLForecaster(Forecaster):
             "model_display_name": self.display_name,
             "model_labels": dict(RESOURCE_LABELS),
         }
+
+    def validate_config(self) -> None:
+        """Fail fast on the Vertex AutoML Forecasting column-role invariants we know about.
+
+        These mirror the server-side ``create_training_pipeline`` validation we discovered on live
+        runs. Checking them here means a regression is caught offline (unit tests) and before any
+        billable API call -- not 4 minutes into a deployed pipeline. The list is the *known* rules;
+        the live preflight (:func:`geaptimes.pipelines.submit.preflight_automl`) remains the
+        catch-all for anything Vertex enforces that we haven't encoded yet.
+        """
+        data = self.cfg.data
+        run = self.run_kwargs()
+        specs = self._column_specs()
+        target, time = data.target_column, data.time_column
+        problems: list[str] = []
+        # We always pass quantiles, so Vertex demands the quantile-loss objective.
+        if run.get("quantiles") and self.params.optimization_objective != _QUANTILE_LOSS_OBJECTIVE:
+            problems.append(
+                f"optimization_objective must be {_QUANTILE_LOSS_OBJECTIVE!r} when quantiles are "
+                f"requested (got {self.params.optimization_objective!r})"
+            )
+        if target not in run["unavailable_at_forecast_columns"]:
+            problems.append(f"target {target!r} must be in unavailable_at_forecast_columns")
+        if time not in run["available_at_forecast_columns"]:
+            problems.append(f"time column {time!r} must be in available_at_forecast_columns")
+        # Every feature/target column needs a transformation; the identifier must NOT have one
+        # (Vertex rejects a transformation on a column with no time-dependency role).
+        if data.series_column in specs:
+            problems.append(
+                f"series column {data.series_column!r} must not have a column_specs transformation"
+            )
+        role_columns = {
+            target,
+            time,
+            *run["time_series_attribute_columns"],
+            *run["available_at_forecast_columns"],
+            *run["unavailable_at_forecast_columns"],
+        }
+        missing = sorted(column for column in role_columns if column not in specs)
+        if missing:
+            problems.append(f"columns missing a column_specs transformation: {missing}")
+        if problems:
+            msg = "invalid AutoML config:\n- " + "\n- ".join(problems)
+            raise ValueError(msg)
 
     def batch_predict_kwargs(self) -> dict[str, Any]:
         """Kwargs for ``model.batch_predict`` against the infer table (BQ → BQ)."""
@@ -175,16 +235,19 @@ class AutoMLForecaster(Forecaster):
 
     def fit(self) -> None:
         """Create a TimeSeriesDataset from the train table and launch managed training."""
+        self.validate_config()
         aip = self._resolve_aiplatform()
         aip.init(project=self.cfg.project.id, location=self.cfg.project.region)
-        dataset = aip.TimeSeriesDataset.create(
+        self.dataset = aip.TimeSeriesDataset.create(
             display_name=self.display_name,
             bq_source=self._bq_uri("train"),
             labels=dict(RESOURCE_LABELS),
         )
-        job = aip.AutoMLForecastingTrainingJob(**self.training_job_kwargs())
+        self.training_job = aip.AutoMLForecastingTrainingJob(**self.training_job_kwargs())
         logger.info("launching AutoML training job %s", self.display_name)
-        self.model = job.run(dataset=dataset, **self.run_kwargs())
+        self.model = self.training_job.run(
+            dataset=self.dataset, sync=self._sync, **self.run_kwargs()
+        )
 
     def predict(self) -> ForecastResult:
         """Batch-predict over the infer table and map results onto the standardized frame."""

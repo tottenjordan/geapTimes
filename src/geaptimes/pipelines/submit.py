@@ -51,6 +51,67 @@ def _lazy_aiplatform() -> Any:  # noqa: ANN401 - external SDK module
     return aiplatform
 
 
+def _cleanup_preflight(forecaster: Any) -> None:  # noqa: ANN401 - holds SDK handles
+    """Best-effort teardown of the probe resources a preflight ``fit()`` may have created.
+
+    On a *valid* config the training pipeline is really created and starts training, so we cancel
+    it (stops the billable compute) and then delete it (cancel leaves a CANCELLED record behind).
+    On an *invalid* config no pipeline resource exists, so these are no-ops. The probe dataset is
+    always removed. Every action is best-effort -- cleanup must never mask the real result.
+    """
+    job = forecaster.training_job
+    if job is not None:
+        for action in ("cancel", "delete"):
+            try:
+                getattr(job, action)()
+            except Exception:  # noqa: BLE001 - cleanup must not mask the real result
+                logger.warning("preflight: training-job %s failed", action, exc_info=True)
+    dataset = forecaster.dataset
+    if dataset is not None:
+        try:
+            dataset.delete()
+        except Exception:  # noqa: BLE001 - cleanup must not mask the real result
+            logger.warning("preflight: could not delete probe dataset", exc_info=True)
+
+
+def preflight_automl(
+    cfg: ExperimentConfig,
+    *,
+    aiplatform: Any = None,  # noqa: ANN401 - external SDK module, injected for tests
+) -> None:
+    """Validate the AutoML backend against Vertex's real rules WITHOUT a full pipeline deploy.
+
+    The role/transformation errors all come from Vertex's server-side ``create_training_pipeline``
+    validation, which the deployed pipeline only reaches after a ~4-minute image-build + submit +
+    pod-startup cycle. This runs the same AutoML ``fit()`` locally with ``sync=False`` so that
+    validation executes in seconds; on a valid config the launched training pipeline is immediately
+    cancelled and the probe dataset deleted (no training spend). An invalid config raises with
+    Vertex's own message. Run this before ``submit_pipeline`` to fail fast and cheap.
+    """
+    from geaptimes.models.automl import AutoMLForecaster  # noqa: PLC0415 - keep model dep lazy
+
+    aip = aiplatform or _lazy_aiplatform()
+    enabled = with_automl_enabled(cfg)
+    model = next(m for m in enabled.models if m.params.type == "automl")
+    forecaster = AutoMLForecaster(model, enabled, aiplatform=aip, sync=False)
+    logger.info("AutoML preflight: static invariant check")
+    forecaster.validate_config()
+    logger.info("AutoML preflight: running Vertex server-side validation")
+    try:
+        forecaster.fit()  # sync=False: schedules the create on a background thread
+        # Block only until the training pipeline RESOURCE is created (seconds) -- this is where
+        # Vertex's column/role validation runs and surfaces InvalidArgument -- not until training
+        # completes. A valid config means a real pipeline now exists; cleanup cancels it.
+        forecaster.training_job.wait_for_resource_creation()
+    except Exception:
+        logger.exception("AutoML preflight FAILED")
+        raise
+    else:
+        logger.info("AutoML preflight PASSED: Vertex accepted the config")
+    finally:
+        _cleanup_preflight(forecaster)
+
+
 def _default_template_path() -> str:
     return str(Path(tempfile.mkdtemp(prefix="geaptimes-pipeline-")) / "comparison_pipeline.yaml")
 
@@ -100,6 +161,12 @@ def main(argv: "list[str] | None" = None) -> int:
         help="Compile the pipeline only; do not submit (no cloud calls, no spend).",
     )
     parser.add_argument(
+        "--preflight-automl",
+        action="store_true",
+        help="Validate the AutoML config against Vertex live (seconds, no training spend); "
+        "do not submit the pipeline.",
+    )
+    parser.add_argument(
         "--output", default=None, help="Where to write the compiled pipeline YAML (optional)."
     )
     args = parser.parse_args(argv)
@@ -107,6 +174,11 @@ def main(argv: "list[str] | None" = None) -> int:
     cfg = ExperimentConfig.from_yaml(args.config)
     if args.enable_automl:
         cfg = with_automl_enabled(cfg)
+
+    if args.preflight_automl:
+        preflight_automl(cfg)
+        logger.info("AutoML preflight complete; pipeline not submitted")
+        return 0
 
     if args.dry_run:
         path = compile_pipeline(cfg, args.output or _default_template_path())

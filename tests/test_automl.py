@@ -68,18 +68,20 @@ class FakeAip:
 def test_training_job_kwargs() -> None:
     kw = _forecaster().training_job_kwargs()
     assert kw["display_name"] == "automl__top25_h14_t14_v14"
-    assert kw["optimization_objective"] == "minimize-rmse"
+    assert kw["optimization_objective"] == "minimize-quantile-loss"
     assert kw["labels"] == {"solution": "geaptimes"}
 
 
 def test_training_job_kwargs_column_specs_cover_target_and_roles() -> None:
     specs = _forecaster().training_job_kwargs()["column_specs"]
-    # Every used column gets an explicit "auto" transformation -- crucially the target, which the
-    # SDK's default auto-generation omits (Vertex Forecasting then rejects the job).
+    # Every feature/target column gets an explicit "auto" transformation -- crucially the target,
+    # which the SDK's default auto-generation omits (Vertex Forecasting then rejects the job).
     assert specs["num_trips"] == "auto"
-    for col in ("date", "start_station_name", *ATTR, *AVAIL, *UNAVAIL):
+    for col in ("date", *ATTR, *AVAIL, *UNAVAIL):
         assert specs[col] == "auto"
-    assert set(specs) == {"num_trips", "date", "start_station_name", *ATTR, *AVAIL, *UNAVAIL}
+    # The series identifier must NOT carry a transformation (Vertex FailedPrecondition otherwise).
+    assert "start_station_name" not in specs
+    assert set(specs) == {"num_trips", "date", *ATTR, *AVAIL, *UNAVAIL}
 
 
 def test_run_kwargs_maps_column_roles_and_settings() -> None:
@@ -88,7 +90,8 @@ def test_run_kwargs_maps_column_roles_and_settings() -> None:
     assert kw["time_column"] == "date"
     assert kw["time_series_identifier_column"] == "start_station_name"
     assert kw["time_series_attribute_columns"] == ATTR
-    assert kw["available_at_forecast_columns"] == AVAIL
+    # Vertex requires the time column itself in the available-at-forecast set.
+    assert kw["available_at_forecast_columns"] == [*AVAIL, "date"]
     # Vertex requires the target column itself in the unavailable-at-forecast set.
     assert kw["unavailable_at_forecast_columns"] == [*UNAVAIL, "num_trips"]
     assert kw["forecast_horizon"] == 14
@@ -101,6 +104,51 @@ def test_run_kwargs_maps_column_roles_and_settings() -> None:
     assert kw["quantiles"] == QUANTILES
     assert kw["holiday_regions"] == ["US"]
     assert kw["model_labels"] == {"solution": "geaptimes"}
+
+
+def test_validate_config_passes_on_default() -> None:
+    _forecaster().validate_config()  # no raise
+
+
+def test_validate_config_collects_role_problems(monkeypatch: pytest.MonkeyPatch) -> None:
+    fc = _forecaster()
+    broken = fc.run_kwargs()
+    broken["available_at_forecast_columns"] = list(AVAIL)  # drop the appended time column
+    broken["unavailable_at_forecast_columns"] = list(UNAVAIL)  # drop the appended target
+    monkeypatch.setattr(fc, "run_kwargs", lambda: broken)
+    with pytest.raises(ValueError) as exc:  # noqa: PT011 - message asserted below
+        fc.validate_config()
+    msg = str(exc.value)
+    assert "time column 'date' must be in available_at_forecast_columns" in msg
+    assert "target 'num_trips' must be in unavailable_at_forecast_columns" in msg
+
+
+def test_validate_config_flags_untransformed_role_column(monkeypatch: pytest.MonkeyPatch) -> None:
+    fc = _forecaster()
+    monkeypatch.setattr(fc, "_column_specs", lambda: {"num_trips": "auto"})  # covariates dropped
+    with pytest.raises(ValueError, match="missing a column_specs transformation"):
+        fc.validate_config()
+
+
+def test_validate_config_flags_non_quantile_objective() -> None:
+    fc = _forecaster(
+        models=[
+            {
+                "name": "automl",
+                "params": {"type": "automl", "optimization_objective": "minimize-rmse"},
+            }
+        ]
+    )
+    with pytest.raises(ValueError, match="optimization_objective must be 'minimize-quantile-loss'"):
+        fc.validate_config()
+
+
+def test_validate_config_flags_transformed_series_column(monkeypatch: pytest.MonkeyPatch) -> None:
+    fc = _forecaster()
+    specs = {**fc._column_specs(), "start_station_name": "auto"}  # noqa: SLF001
+    monkeypatch.setattr(fc, "_column_specs", lambda: specs)
+    with pytest.raises(ValueError, match="series column 'start_station_name' must not"):
+        fc.validate_config()
 
 
 def test_holiday_regions_none_when_unset() -> None:
@@ -134,7 +182,10 @@ def test_fit_wires_dataset_job_and_run() -> None:
     assert fake.job_kwargs["display_name"] == "automl__top25_h14_t14_v14"
     assert fake.run_kwargs["dataset"] == "DATASET"
     assert fake.run_kwargs["forecast_horizon"] == 14
+    assert fake.run_kwargs["sync"] is True  # default; preflight flips to False
     assert fc.model == "MODEL"
+    assert fc.dataset == "DATASET"  # handle captured for preflight cleanup
+    assert fc.training_job is not None
 
 
 def test_predict_maps_flattened_output() -> None:
@@ -155,7 +206,7 @@ def test_predict_maps_flattened_output() -> None:
     result = fc.predict()
     preds = result.predictions
     assert list(preds.columns) == PREDICTION_COLUMNS
-    assert result.metadata["objective"] == "minimize-rmse"
+    assert result.metadata["objective"] == "minimize-quantile-loss"
     first = preds.iloc[0]
     assert first["forecast"] == 10.0
     assert first["q90"] == 12.0

@@ -75,7 +75,7 @@ models:
     enabled: false # expensive; opt-in. Wired as a first-class backend; flip enabled to run live.
     params:
       type: automl
-      optimization_objective: minimize-rmse
+      optimization_objective: minimize-quantile-loss
       context_window: 28 # AutoML look-back (distinct from TimesFM context_len)
       budget_milli_node_hours: 1000 # training budget (1000 = 1 node-hour); bounds billable spend
 

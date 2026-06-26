@@ -2,7 +2,7 @@
 
 <h1 align="center">🚲 geapTimes ⌛</h1>
 
-> A modular, production-grade factory framework for enterprise time-series forecasting on the **Gemini Enterprise Agent Platform** (GEAP, *fka Vertex AI*). The `ForecastFactory` creates model experiments for Google's `TimesFM`, `AutoML`, and `BigQuery ML` services.
+> A modular factory framework for enterprise time-series forecasting with the **Gemini Enterprise Agent Platform** (GEAP, *fka Vertex AI*). The `ForecastFactory` creates model experiments for GEAP `AutoML`, Google Research's [TimesFM](https://research.google/blog/a-decoder-only-foundation-model-for-time-series-forecasting/), and BigQuery ML's `ARIMA+`.
 
 ![Python](https://img.shields.io/badge/Python-3.11-3776AB?logo=python&logoColor=white)
 ![uv](https://img.shields.io/badge/packaging-uv-DE5FE9?logo=uv&logoColor=white)
@@ -124,7 +124,10 @@ geapTimes/
   [`ARIMA_PLUS_XREG` model syntax](https://docs.cloud.google.com/bigquery/docs/reference/standard-sql/bigqueryml-syntax-create-time-series) ·
   [multivariate forecasting tutorial](https://docs.cloud.google.com/bigquery/docs/arima-plus-xreg-single-time-series-forecasting-tutorial)
 - **TimesFM 2.5** —
-  [HuggingFace model card](https://huggingface.co/google/timesfm-2.5-200m-pytorch) ·
+  
+  - [GEAP Model Card](https://pantheon.corp.google.com/agent-platform/publishers/google/model-garden/timesfm?e=13802955&mods=-ai_platform_fake_service,-ai_platform_staging_service&project=hybrid-vertex)
+  - [HuggingFace Model Card](https://huggingface.co/google/timesfm-2.5-200m-pytorch) 
+  ·
   [GitHub repo](https://github.com/google-research/timesfm)
 - **Vertex AI Experiments** (run tracking / params / metrics) —
   [docs](https://docs.cloud.google.com/vertex-ai/docs/experiments/intro-vertex-ai-experiments)

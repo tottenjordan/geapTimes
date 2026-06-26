@@ -153,7 +153,9 @@ class AutoMLParams(_Base):
     """Vertex AI / GEAP AutoML forecasting params."""
 
     type: Literal["automl"]
-    optimization_objective: str = "minimize-rmse"
+    # The framework always emits quantile forecasts (q10..q90), and Vertex requires
+    # "minimize-quantile-loss" whenever quantiles are requested -- any other objective is rejected.
+    optimization_objective: str = "minimize-quantile-loss"
     context_window: int = 28
     # Training budget in milli-node-hours (1000 = 1 node-hour). Bounds AutoML's billable spend;
     # the wrapper is gated by default (model disabled) and only runs when explicitly enabled.

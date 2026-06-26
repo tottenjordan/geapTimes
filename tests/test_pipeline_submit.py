@@ -2,7 +2,9 @@
 
 import logging
 from pathlib import Path
+from typing import Any
 
+import pytest
 import yaml
 
 from geaptimes.pipelines import submit
@@ -105,6 +107,75 @@ def test_submit_pipeline_caching_override(tmp_path: Path) -> None:
         _cfg(), aiplatform=aip, template_path=tmp_path / "p.yaml", enable_caching=False
     )
     assert job.kwargs["enable_caching"] is False
+
+
+# -- preflight_automl -----------------------------------------------------------------------------
+class _FakeDataset:
+    def __init__(self) -> None:
+        self.deleted = False
+
+    def delete(self) -> None:
+        self.deleted = True
+
+
+class _PreflightAip:
+    """Fake aiplatform for the AutoML preflight: optionally fails the training run."""
+
+    def __init__(self, run_error: Exception | None = None) -> None:
+        self.init_kwargs: dict | None = None
+        self.dataset = _FakeDataset()
+        self.job: Any = None
+        outer = self
+
+        class TimeSeriesDataset:
+            @staticmethod
+            def create(**_kw: object) -> _FakeDataset:
+                return outer.dataset
+
+        class AutoMLForecastingTrainingJob:
+            def __init__(self, **kw: object) -> None:
+                outer.job = self
+                self.kwargs = kw
+                self.cancelled = False
+                self.deleted = False
+
+            def run(self, **_kw: object) -> str:
+                # sync=False returns immediately; any error surfaces at wait_for_resource_creation.
+                return "MODEL"
+
+            def wait_for_resource_creation(self) -> None:
+                if run_error is not None:
+                    raise run_error
+
+            def cancel(self) -> None:
+                self.cancelled = True
+
+            def delete(self) -> None:
+                self.deleted = True
+
+        self.TimeSeriesDataset = TimeSeriesDataset
+        self.AutoMLForecastingTrainingJob = AutoMLForecastingTrainingJob
+
+    def init(self, **kw: object) -> None:
+        self.init_kwargs = kw
+
+
+def test_preflight_automl_success_cancels_job_and_deletes_dataset() -> None:
+    aip = _PreflightAip()
+    submit.preflight_automl(_cfg(), aiplatform=aip)
+    assert aip.job.cancelled is True
+    assert aip.job.deleted is True
+    assert aip.dataset.deleted is True
+
+
+def test_preflight_automl_propagates_error_and_still_cleans_up() -> None:
+    boom = ValueError("The time column 'date' should be available at forecast.")
+    aip = _PreflightAip(run_error=boom)
+    with pytest.raises(ValueError, match="should be available at forecast"):
+        submit.preflight_automl(_cfg(), aiplatform=aip)
+    # the probe dataset is created before the failing run(), so cleanup must still fire
+    assert aip.dataset.deleted is True
+    assert aip.job.cancelled is True
 
 
 # -- CLI ------------------------------------------------------------------------------------------

@@ -76,7 +76,7 @@ models:
     enabled: true # comparison includes AutoML this stage
     params:
       type: automl
-      optimization_objective: minimize-rmse
+      optimization_objective: minimize-quantile-loss
       context_window: 28
       budget_milli_node_hours: 1000 # floor budget (1 node-hour); keeps the live run cheap
 
