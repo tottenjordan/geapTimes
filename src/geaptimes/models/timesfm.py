@@ -14,16 +14,15 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, cast
 
 from geaptimes.models.base import (
-    DATE_COLUMN,
-    FORECAST_COLUMN,
-    HORIZON_STEP_COLUMN,
-    MODEL_COLUMN,
     PREDICTION_COLUMNS,
-    QUANTILES,
-    SERIES_COLUMN,
     Forecaster,
     ForecastResult,
-    quantile_column,
+)
+from geaptimes.models.timesfm_core import (
+    _quantile_channels,
+    compile_timesfm,
+    forecast_arrays,
+    rows_from_forecast,
 )
 from geaptimes.naming import table_names
 from geaptimes.utils.logger import get_logger
@@ -35,17 +34,8 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
 logger = get_logger(__name__)
 
-# TimesFM's continuous-quantile head emits 10 channels: index 0 is the mean, indices 1..9 are
-# the deciles q10..q90. So quantile level ``q`` lives at channel ``round(q * 10)``.
-_DECILE_CHANNELS = 10
-
-
-def _quantile_channels(n_channels: int) -> list[int]:
-    """Channel index per :data:`QUANTILES` level for the model's quantile output."""
-    if n_channels >= _DECILE_CHANNELS:
-        return [round(q * 10) for q in QUANTILES]
-    # Fallback: a head that emits exactly our levels positionally.
-    return list(range(len(QUANTILES)))
+# Re-exported for backwards-compatible imports; canonical definition in timesfm_core.
+__all__ = ["TimesFMForecaster", "_quantile_channels"]
 
 
 class TimesFMForecaster(Forecaster):
@@ -83,16 +73,12 @@ class TimesFMForecaster(Forecaster):
         import timesfm  # noqa: PLC0415 - heavy optional import, kept lazy
 
         model = timesfm.TimesFM_2p5_200M_torch.from_pretrained(checkpoint)
-        model.compile(
-            timesfm.ForecastConfig(
-                max_context=self.params.max_context,
-                max_horizon=self.cfg.forecast.horizon,
-                normalize_inputs=True,
-                use_continuous_quantile_head=self.params.quantiles,
-                fix_quantile_crossing=self.params.quantiles,
-            )
+        return compile_timesfm(
+            model,
+            max_context=self.params.max_context,
+            horizon=self.cfg.forecast.horizon,
+            quantiles=self.params.quantiles,
         )
-        return model
 
     def _load_model(self) -> Any:  # noqa: ANN401 - external model
         if self._model is None:
@@ -120,7 +106,6 @@ class TimesFMForecaster(Forecaster):
 
     def predict(self) -> ForecastResult:
         """Forecast ``horizon`` steps for every series from its recent context."""
-        import numpy as np  # noqa: PLC0415 - lazy heavy import
         import pandas as pd  # noqa: PLC0415 - lazy heavy import
 
         data = self.cfg.data
@@ -131,7 +116,7 @@ class TimesFMForecaster(Forecaster):
         train = frame[frame["splits"] != "TEST"]
 
         series_ids: list[Any] = []
-        inputs: list[np.ndarray] = []
+        inputs: list[Any] = []
         last_dates: list[Any] = []
         for series_id, group in train.groupby(data.series_column, sort=True):
             ordered = group.sort_values(data.time_column)
@@ -141,24 +126,10 @@ class TimesFMForecaster(Forecaster):
             last_dates.append(pd.Timestamp(ordered[data.time_column].iloc[-1]))
 
         model = self._load_model()
-        point, quantiles = model.forecast(horizon, inputs=inputs)
-        point = np.asarray(point)
-        quantiles = np.asarray(quantiles)
-        channels = _quantile_channels(quantiles.shape[-1])
-
-        rows: list[dict[str, Any]] = []
-        for i, series_id in enumerate(series_ids):
-            for step in range(horizon):
-                row: dict[str, Any] = {
-                    SERIES_COLUMN: series_id,
-                    DATE_COLUMN: (last_dates[i] + pd.Timedelta(days=step + 1)).date(),
-                    HORIZON_STEP_COLUMN: step + 1,
-                    FORECAST_COLUMN: float(point[i, step]),
-                    MODEL_COLUMN: self.name,
-                }
-                for level, channel in zip(QUANTILES, channels, strict=True):
-                    row[quantile_column(level)] = float(quantiles[i, step, channel])
-                rows.append(row)
+        forecast = forecast_arrays(model, inputs, horizon)
+        rows = rows_from_forecast(
+            series_ids, last_dates, forecast, horizon=horizon, model_name=self.name
+        )
 
         predictions = pd.DataFrame(rows, columns=PREDICTION_COLUMNS)
         metadata = {
