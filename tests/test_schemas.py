@@ -3,7 +3,7 @@
 import pytest
 from pydantic import ValidationError
 
-from geaptimes.schemas import ExperimentConfig, TimesFMParams
+from geaptimes.schemas import AutoMLParams, ExperimentConfig, TimesFMParams
 
 VALID = {
     "project": {"id": "proj", "gcs_bucket": "bkt"},
@@ -78,3 +78,31 @@ def test_from_yaml_missing_env_raises(tmp_path, monkeypatch) -> None:
     path.write_text("project:\n  id: ${DOES_NOT_EXIST}\n", encoding="utf-8")
     with pytest.raises(ValueError, match="not set"):
         ExperimentConfig.from_yaml(path)
+
+
+def test_doe_defaults_to_empty_axes() -> None:
+    cfg = ExperimentConfig.model_validate(VALID)
+    assert cfg.doe.axes == {}
+
+
+def test_doe_axes_round_trip() -> None:
+    cfg = ExperimentConfig.model_validate({**VALID, "doe": {"axes": {"forecast.horizon": [7, 14]}}})
+    assert cfg.doe.axes == {"forecast.horizon": [7, 14]}
+
+
+def test_automl_budget_defaults_and_validates() -> None:
+    cfg = ExperimentConfig.model_validate(
+        {**VALID, "models": [{"name": "a", "params": {"type": "automl"}}]}
+    )
+    params = cfg.models[0].params
+    assert isinstance(params, AutoMLParams)
+    assert params.budget_milli_node_hours == 1000
+
+
+def test_automl_budget_must_be_positive() -> None:
+    bad = {
+        **VALID,
+        "models": [{"name": "a", "params": {"type": "automl", "budget_milli_node_hours": 0}}],
+    }
+    with pytest.raises(ValidationError, match="budget_milli_node_hours"):
+        ExperimentConfig.model_validate(bad)

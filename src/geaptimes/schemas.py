@@ -10,7 +10,7 @@ own, type-checked fields.
 import os
 import re
 from pathlib import Path
-from typing import Annotated, ClassVar, Literal
+from typing import Annotated, Any, ClassVar, Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -155,6 +155,17 @@ class AutoMLParams(_Base):
     type: Literal["automl"]
     optimization_objective: str = "minimize-rmse"
     context_window: int = 28
+    # Training budget in milli-node-hours (1000 = 1 node-hour). Bounds AutoML's billable spend;
+    # the wrapper is gated by default (model disabled) and only runs when explicitly enabled.
+    budget_milli_node_hours: int = 1000
+
+    @field_validator("budget_milli_node_hours")
+    @classmethod
+    def _positive(cls, v: int) -> int:
+        if v <= 0:
+            msg = "automl.budget_milli_node_hours must be > 0"
+            raise ValueError(msg)
+        return v
 
 
 ModelParams = Annotated[
@@ -178,6 +189,18 @@ class ExecutionConfig(_Base):
     experiment_name: str
 
 
+class DOEConfig(_Base):
+    """Design-of-Experiments sweep.
+
+    ``axes`` maps a dotted config path (e.g. ``"forecast.horizon"``) to the list of values to
+    sweep. :func:`geaptimes.experiment.doe.expand` takes the cross-product of all axes, applying
+    each combination as an override on the base config. Empty ``axes`` means a single run (the
+    base config unchanged).
+    """
+
+    axes: dict[str, list[Any]] = Field(default_factory=dict)
+
+
 class ExperimentConfig(_Base):
     """Root experiment config — the typed contract consumed across geapTimes."""
 
@@ -186,6 +209,7 @@ class ExperimentConfig(_Base):
     forecast: ForecastSettings = Field(default_factory=ForecastSettings)
     models: list[ModelConfig]
     execution: ExecutionConfig
+    doe: DOEConfig = Field(default_factory=DOEConfig)
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> "ExperimentConfig":
