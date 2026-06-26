@@ -17,11 +17,22 @@ nothing deployed.
 
 from typing import TYPE_CHECKING
 
+from google_cloud_pipeline_components.types import artifact_types
+from google_cloud_pipeline_components.v1.endpoint import EndpointCreateOp, ModelDeployOp
+from google_cloud_pipeline_components.v1.model import ModelUploadOp
 from kfp import dsl
+from kfp.dsl import importer
 
 from geaptimes.naming import config_slug
 from geaptimes.pipelines.components import build_components
-from geaptimes.pipelines.config import image_uri, pipeline_root
+from geaptimes.pipelines.config import (
+    image_uri,
+    pipeline_root,
+    resource_labels,
+    timesfm_container_spec,
+    timesfm_endpoint_display_name,
+    timesfm_model_display_name,
+)
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from kfp.dsl.base_component import BaseComponent
@@ -102,26 +113,60 @@ def build_pipeline(cfg: "ExperimentConfig") -> "BaseComponent":  # noqa: PLR0915
             score.set_display_name(f"score:{model_name}")
             rows.append(score.outputs["Output"])
         if timesfm:
-            # The prepped Dataset artifact is the lineage edge into the serving branch: the served
-            # TimesFM model reads its context from the prepped table at predict time.
-            register = comps.register_timesfm(
-                config_json=config_json, prepped=prepped.outputs["prepped"]
+            # Hybrid serving lifecycle via GCPC ops (standardized google.Vertex* artifacts +
+            # ML-Metadata lineage + billing-label propagation). Our TimesFM is a *custom container*
+            # with a baked checkpoint, so ModelUploadOp consumes an UnmanagedContainerModel artifact
+            # carrying the containerSpec (built by an importer node) rather than serving_container_*
+            # args. project/location/display names are baked at compile time (compiled per submit).
+            container_spec = importer(
+                artifact_uri="",  # checkpoint baked into the image; no GCS model artifacts
+                artifact_class=artifact_types.UnmanagedContainerModel,
+                metadata={"containerSpec": timesfm_container_spec(cfg)},
+            )
+            container_spec.set_display_name("timesfm:container-spec")
+            register = ModelUploadOp(
+                project=cfg.project.id,
+                location=cfg.project.region,
+                display_name=timesfm_model_display_name(cfg),
+                unmanaged_container_model=container_spec.outputs["artifact"],
+                labels=resource_labels(),
             )
             register.set_caching_options(caching)
             register.set_display_name("register-timesfm")
             if serving.mode == "endpoint":
-                deploy = comps.deploy_endpoint(
-                    config_json=config_json, model_resource_name=register.output
+                endpoint = EndpointCreateOp(
+                    project=cfg.project.id,
+                    location=cfg.project.region,
+                    display_name=timesfm_endpoint_display_name(cfg),
+                    labels=resource_labels(),
+                )
+                endpoint.set_caching_options(caching)
+                endpoint.set_display_name("create-endpoint")
+                deploy = ModelDeployOp(
+                    model=register.outputs["model"],
+                    endpoint=endpoint.outputs["endpoint"],
+                    deployed_model_display_name=timesfm_endpoint_display_name(cfg),
+                    dedicated_resources_machine_type=serving.machine_type,
+                    dedicated_resources_min_replica_count=serving.min_replica_count,
+                    dedicated_resources_max_replica_count=serving.max_replica_count,
+                    traffic_split={"0": "100"},
                 )
                 deploy.set_caching_options(caching)
                 deploy.set_display_name("deploy-endpoint")
+                # endpoint_predict stays custom (online predict + our frame mapping). It consumes
+                # the VertexEndpoint artifact and must run *after* the deploy completes.
                 served = comps.endpoint_predict(
-                    config_json=config_json, endpoint_resource_name=deploy.output
+                    config_json=config_json,
+                    endpoint=endpoint.outputs["endpoint"],
+                    prepped=prepped.outputs["prepped"],
                 )
+                served.after(deploy)
                 served.set_display_name("timesfm:endpoint-predict")
             else:
                 served = comps.batch_predict(
-                    config_json=config_json, model_resource_name=register.output
+                    config_json=config_json,
+                    model=register.outputs["model"],
+                    prepped=prepped.outputs["prepped"],
                 )
                 served.set_display_name("timesfm:batch-predict")
             served.set_caching_options(caching)

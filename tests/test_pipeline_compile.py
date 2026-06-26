@@ -60,8 +60,12 @@ def test_endpoint_mode_transient_full_graph(tmp_path: Path) -> None:
     assert "exec-ensure-source" in execs
     assert "exec-ensure-prepped" in execs
     assert "exec-build-tables" in execs
-    assert "exec-register-timesfm" in execs
-    assert "exec-deploy-endpoint" in execs
+    # hybrid GCPC serving: importer -> ModelUploadOp -> EndpointCreateOp + ModelDeployOp
+    assert "exec-importer" in execs
+    assert "exec-model-upload" in execs
+    assert "exec-endpoint-create" in execs
+    assert "exec-model-deploy" in execs
+    # endpoint_predict stays custom (online predict + our frame mapping)
     assert "exec-endpoint-predict" in execs
     assert "exec-compare-backends" in execs
     # transient endpoint mode -> teardown wired as the ExitHandler exit task
@@ -78,7 +82,10 @@ def test_endpoint_mode_transient_full_graph(tmp_path: Path) -> None:
 def test_batch_mode_uses_batch_predict_and_no_endpoint(tmp_path: Path) -> None:
     execs = _executors(_cfg(ALL_THREE, serving={"mode": "batch"}), tmp_path)
     assert "exec-batch-predict" in execs
-    assert "exec-deploy-endpoint" not in execs
+    # batch still uploads the model (importer -> ModelUploadOp) but creates/deploys no endpoint
+    assert "exec-model-upload" in execs
+    assert "exec-endpoint-create" not in execs
+    assert "exec-model-deploy" not in execs
     assert "exec-endpoint-predict" not in execs
     # batch creates no endpoint, so there is nothing to tear down
     assert "exec-teardown-serving" not in execs
@@ -87,7 +94,7 @@ def test_batch_mode_uses_batch_predict_and_no_endpoint(tmp_path: Path) -> None:
 def test_keep_deployed_skips_teardown(tmp_path: Path) -> None:
     serving = {"mode": "endpoint", "keep_deployed": True}
     execs = _executors(_cfg(ALL_THREE, serving=serving), tmp_path)
-    assert "exec-deploy-endpoint" in execs
+    assert "exec-model-deploy" in execs
     assert "exec-endpoint-predict" in execs
     assert "exec-teardown-serving" not in execs
 
@@ -101,8 +108,12 @@ def test_timesfm_disabled_skips_serving(tmp_path: Path) -> None:
     assert "exec-train-backend" in execs
     assert "exec-infer-backend" in execs
     assert "exec-score-and-track" in execs
-    assert "exec-register-timesfm" not in execs
-    assert "exec-deploy-endpoint" not in execs
+    # no TimesFM => no serving lifecycle at all
+    assert "exec-importer" not in execs
+    assert "exec-model-upload" not in execs
+    assert "exec-endpoint-create" not in execs
+    assert "exec-model-deploy" not in execs
+    assert "exec-endpoint-predict" not in execs
     assert "exec-batch-predict" not in execs
     assert "exec-teardown-serving" not in execs
 
@@ -124,7 +135,9 @@ def test_task_display_names_are_readable(tmp_path: Path) -> None:
         "ensure-source",
         "ensure-prepped",
         "build-tables",
+        "timesfm:container-spec",
         "register-timesfm",
+        "create-endpoint",
         "deploy-endpoint",
         "timesfm:endpoint-predict",
         "compare-backends",
@@ -153,9 +166,13 @@ def test_table_artifacts_wire_data_lineage_into_every_backend(tmp_path: Path) ->
     """The table Dataset artifacts form one source->prepped->{train,infer,timesfm} lineage chain.
 
     The self-bootstrapping front steps own the source/prepped artifacts: ensure-prepped derives its
-    ``prepped`` from ensure-source's ``source`` and feeds it into both build-tables and the TimesFM
-    serving branch; build-tables derives train/infer from prepped. register-timesfm consuming
-    ``prepped`` is what closes the previously edge-less serving branch.
+    ``prepped`` from ensure-source's ``source`` and feeds it into build-tables AND the TimesFM
+    serving branch; build-tables derives train/infer from prepped. The served TimesFM model reads
+    its context from prepped at predict time, so the prepped edge lands on endpoint-predict (the
+    GCPC upload/deploy ops are infra and have no data input) -- closing the once edge-less branch.
+
+    Task ids here are the component-derived keys: the GCPC tasks are ``model-upload`` /
+    ``endpoint-create`` / ``model-deploy`` (their readable display names are asserted separately).
     """
     tasks = _tasks_by_name(_cfg(ALL_THREE), tmp_path)
 
@@ -163,13 +180,20 @@ def test_table_artifacts_wire_data_lineage_into_every_backend(tmp_path: Path) ->
         src = tasks[task]["inputs"]["artifacts"][key]["taskOutputArtifact"]
         return f"{src['producerTask']}.{src['outputArtifactKey']}"
 
+    # data lineage
     assert artifact_source("ensure-prepped", "source") == "ensure-source.source"
     assert artifact_source("build-tables", "prepped") == "ensure-prepped.prepped"
     assert artifact_source("train-backend", "train") == "build-tables.train"
     assert artifact_source("infer-backend", "infer") == "build-tables.infer"
-    assert artifact_source("register-timesfm", "prepped") == "ensure-prepped.prepped"
-    assert "ensure-prepped" in tasks["register-timesfm"]["dependentTasks"]
+    assert artifact_source("endpoint-predict", "prepped") == "ensure-prepped.prepped"
     assert "ensure-source" in tasks["ensure-prepped"]["dependentTasks"]
+    # GCPC serving lifecycle: importer -> model-upload; {endpoint-create, model-upload} -> deploy
+    assert "importer" in tasks["model-upload"]["dependentTasks"]
+    assert artifact_source("model-deploy", "model") == "model-upload.model"
+    assert artifact_source("model-deploy", "endpoint") == "endpoint-create.endpoint"
+    # custom endpoint-predict consumes the VertexEndpoint artifact and runs after the deploy
+    assert artifact_source("endpoint-predict", "endpoint") == "endpoint-create.endpoint"
+    assert "model-deploy" in tasks["endpoint-predict"]["dependentTasks"]
 
 
 def test_pipeline_name_and_config_param(tmp_path: Path) -> None:

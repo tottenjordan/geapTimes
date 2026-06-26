@@ -899,6 +899,7 @@ dependencies = [
     { name = "flask" },
     { name = "google-cloud-aiplatform" },
     { name = "google-cloud-bigquery" },
+    { name = "google-cloud-pipeline-components" },
     { name = "google-cloud-storage" },
     { name = "gunicorn" },
     { name = "kfp" },
@@ -929,6 +930,7 @@ requires-dist = [
     { name = "flask", specifier = ">=3.1.3" },
     { name = "google-cloud-aiplatform", specifier = "==1.158.0" },
     { name = "google-cloud-bigquery", specifier = ">=3.42.1" },
+    { name = "google-cloud-pipeline-components", specifier = "==2.22.0" },
     { name = "google-cloud-storage", specifier = ">=3.12.0" },
     { name = "gunicorn", specifier = ">=26.0.0" },
     { name = "kfp", specifier = ">=2,<3" },
@@ -1049,6 +1051,20 @@ dependencies = [
 sdist = { url = "https://us-python.pkg.dev/artifact-foundry-prod/ah-3p-staging-python/google-cloud-core/google_cloud_core-2.6.0.tar.gz", hash = "sha256:e76149739f90fac1fc6757c09f47eaccb3145b54adbd7759b0f7c4b235f46c83" }
 wheels = [
     { url = "https://us-python.pkg.dev/artifact-foundry-prod/ah-3p-staging-python/google-cloud-core/google_cloud_core-2.6.0-py3-none-any.whl", hash = "sha256:6d63ac8e5eca6d9e4319d0a1e2265fadcd7f1049904378caecfa01cf52dd869e" },
+]
+
+[[package]]
+name = "google-cloud-pipeline-components"
+version = "2.22.0"
+source = { registry = "https://us-python.pkg.dev/artifact-foundry-prod/ah-3p-staging-python/simple/" }
+dependencies = [
+    { name = "google-api-core" },
+    { name = "google-cloud-aiplatform" },
+    { name = "jinja2" },
+    { name = "kfp" },
+]
+wheels = [
+    { url = "https://us-python.pkg.dev/artifact-foundry-prod/ah-3p-staging-python/google-cloud-pipeline-components/google_cloud_pipeline_components-2.22.0-py3-none-any.whl", hash = "sha256:aea2d526b3d562246beb7a4ca983e48983448c7b8b04a4f7053374f08a927104" },
 ]
 
 [[package]]

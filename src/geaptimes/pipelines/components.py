@@ -29,8 +29,6 @@ class PipelineComponents:
     train_backend: Any
     infer_backend: Any
     score_and_track: Any
-    register_timesfm: Any
-    deploy_endpoint: Any
     endpoint_predict: Any
     batch_predict: Any
     teardown_serving: Any
@@ -163,46 +161,38 @@ def build_components(image: str) -> PipelineComponents:  # noqa: PLR0915, C901 -
         return base64.b64encode(payload.encode("utf-8")).decode("ascii")
 
     @dsl.component(base_image=image)
-    def register_timesfm(config_json: str, prepped: dsl.Input[dsl.Dataset]) -> str:
-        from geaptimes.pipelines import steps
-        from geaptimes.schemas import ExperimentConfig
-
-        _ = prepped  # lineage edge: served model reads its context from the prepped table
-        cfg = ExperimentConfig.model_validate_json(config_json)
-        return steps.register_timesfm_step(cfg)
-
-    @dsl.component(base_image=image)
-    def deploy_endpoint(config_json: str, model_resource_name: str) -> str:
-        from geaptimes.pipelines import steps
-        from geaptimes.schemas import ExperimentConfig
-
-        cfg = ExperimentConfig.model_validate_json(config_json)
-        return steps.deploy_endpoint_step(cfg, model_resource_name)
-
-    @dsl.component(base_image=image)
     def endpoint_predict(
         config_json: str,
-        endpoint_resource_name: str,
+        endpoint: dsl.Input[dsl.Artifact],
+        prepped: dsl.Input[dsl.Dataset],
         predictions: dsl.Output[dsl.Dataset],
     ) -> None:
         from geaptimes.pipelines import steps
         from geaptimes.schemas import ExperimentConfig
 
+        _ = prepped  # lineage edge: the online predictions read context from the prepped table
+        # ``endpoint`` is the google.VertexEndpoint artifact from GCPC's EndpointCreateOp; the
+        # resource name lives in its metadata (consumed as a base Artifact so we don't depend on
+        # the GCPC artifact types inside the container).
         cfg = ExperimentConfig.model_validate_json(config_json)
-        frame = steps.endpoint_predict_step(cfg, endpoint_resource_name)
+        frame = steps.endpoint_predict_step(cfg, endpoint.metadata["resourceName"])
         frame.to_parquet(predictions.path, index=False)
 
     @dsl.component(base_image=image)
     def batch_predict(
         config_json: str,
-        model_resource_name: str,
+        model: dsl.Input[dsl.Artifact],
+        prepped: dsl.Input[dsl.Dataset],
         predictions: dsl.Output[dsl.Dataset],
     ) -> None:
         from geaptimes.pipelines import steps
         from geaptimes.schemas import ExperimentConfig
 
+        _ = prepped  # lineage edge: the batch predictions read context from the prepped table
+        # ``model`` is the google.VertexModel artifact from GCPC's ModelUploadOp (resource name in
+        # its metadata).
         cfg = ExperimentConfig.model_validate_json(config_json)
-        frame = steps.batch_predict_timesfm_step(cfg, model_resource_name)
+        frame = steps.batch_predict_timesfm_step(cfg, model.metadata["resourceName"])
         frame.to_parquet(predictions.path, index=False)
 
     @dsl.component(base_image=image)
@@ -235,8 +225,6 @@ def build_components(image: str) -> PipelineComponents:  # noqa: PLR0915, C901 -
         train_backend=train_backend,
         infer_backend=infer_backend,
         score_and_track=score_and_track,
-        register_timesfm=register_timesfm,
-        deploy_endpoint=deploy_endpoint,
         endpoint_predict=endpoint_predict,
         batch_predict=batch_predict,
         teardown_serving=teardown_serving,

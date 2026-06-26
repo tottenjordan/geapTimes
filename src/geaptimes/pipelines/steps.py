@@ -36,9 +36,9 @@ from geaptimes.models.base import (
 from geaptimes.models.factory import ForecastFactory
 from geaptimes.naming import config_fingerprint_hash, table_names
 from geaptimes.pipelines.config import (
-    image_uri,
     pipeline_root,
     resource_labels,
+    timesfm_context_len,
     timesfm_endpoint_display_name,
     timesfm_model_display_name,
 )
@@ -55,11 +55,6 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from geaptimes.schemas import ExperimentConfig
 
 logger = get_logger(__name__)
-
-_DEFAULT_CONTEXT_LEN = 512
-_HEALTH_ROUTE = "/health"
-_PREDICT_ROUTE = "/predict"
-_SERVING_PORT = 8080
 
 
 @dataclass
@@ -93,15 +88,6 @@ def _build_forecaster(cfg: "ExperimentConfig", model_name: str) -> "Forecaster":
     raise ValueError(msg)
 
 
-def _timesfm_context_len(cfg: "ExperimentConfig") -> int:
-    """Context length from the timesfm model params (default if absent)."""
-    for model_cfg in cfg.models:
-        params = model_cfg.params
-        if params.type == "timesfm":
-            return params.context_len
-    return _DEFAULT_CONTEXT_LEN
-
-
 def _lazy_aiplatform() -> Any:  # noqa: ANN401 - external SDK module
     from google.cloud import aiplatform  # noqa: PLC0415 - lazy cloud import
 
@@ -123,7 +109,7 @@ def series_contexts(
     import pandas as pd  # noqa: PLC0415 - lazy heavy import
 
     data = cfg.data
-    context_len = _timesfm_context_len(cfg)
+    context_len = timesfm_context_len(cfg)
     train = frame[frame["splits"] != "TEST"]
     series_ids: list[Any] = []
     contexts: list[list[float]] = []
@@ -397,77 +383,6 @@ def score_and_track_step(  # noqa: PLR0913 - cfg + name + frame + injected seams
         artifact_uri=artifact_uri,
     )
     return BackendResult(record=record, predictions=predictions)
-
-
-def register_timesfm_step(
-    cfg: "ExperimentConfig",
-    *,
-    aiplatform: Any = None,  # noqa: ANN401 - external SDK module, injected for tests
-) -> str:
-    """Upload the custom-container TimesFM model to the Vertex Model Registry; return its name."""
-    aip = aiplatform or _lazy_aiplatform()
-    _aip_init(aip, cfg)
-    model = aip.Model.upload(
-        display_name=timesfm_model_display_name(cfg),
-        serving_container_image_uri=image_uri(cfg),
-        serving_container_predict_route=_PREDICT_ROUTE,
-        serving_container_health_route=_HEALTH_ROUTE,
-        serving_container_ports=[_SERVING_PORT],
-        serving_container_environment_variables=_serving_env(cfg),
-        labels=resource_labels(),
-    )
-    logger.info("registered TimesFM model %s", model.resource_name)
-    return model.resource_name
-
-
-def _serving_env(cfg: "ExperimentConfig") -> dict[str, str]:
-    """Environment variables the serving container reads to compile the predictor."""
-    context_len = _timesfm_context_len(cfg)
-    checkpoint = "google/timesfm-2.5-200m-pytorch"
-    max_context = 1024
-    quantiles = True
-    for model_cfg in cfg.models:
-        if model_cfg.params.type == "timesfm":
-            checkpoint = model_cfg.params.checkpoint
-            max_context = model_cfg.params.max_context
-            quantiles = model_cfg.params.quantiles
-            break
-    return {
-        "TIMESFM_CHECKPOINT": checkpoint,
-        "TIMESFM_MAX_CONTEXT": str(max_context),
-        "TIMESFM_CONTEXT_LEN": str(context_len),
-        "TIMESFM_HORIZON": str(cfg.forecast.horizon),
-        "TIMESFM_QUANTILES": "true" if quantiles else "false",
-    }
-
-
-def deploy_endpoint_step(
-    cfg: "ExperimentConfig",
-    model_resource_name: str,
-    *,
-    aiplatform: Any = None,  # noqa: ANN401 - external SDK module, injected for tests
-) -> str:
-    """Deploy the registered model to an online endpoint; return the endpoint resource name."""
-    aip = aiplatform or _lazy_aiplatform()
-    _aip_init(aip, cfg)
-    serving = cfg.pipeline.serving
-    # Create the endpoint with our display name + labels first, so the transient-teardown step can
-    # find it by display name (the ExitHandler exit task only has config, not this resource name).
-    endpoint = aip.Endpoint.create(
-        display_name=timesfm_endpoint_display_name(cfg),
-        labels=resource_labels(),
-    )
-    model = aip.Model(model_resource_name)
-    model.deploy(
-        endpoint=endpoint,
-        deployed_model_display_name=timesfm_endpoint_display_name(cfg),
-        machine_type=serving.machine_type,
-        min_replica_count=serving.min_replica_count,
-        max_replica_count=serving.max_replica_count,
-        traffic_percentage=100,
-    )
-    logger.info("deployed TimesFM endpoint %s", endpoint.resource_name)
-    return endpoint.resource_name
 
 
 def endpoint_predict_step(

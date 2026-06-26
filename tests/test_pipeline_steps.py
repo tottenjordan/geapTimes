@@ -382,36 +382,6 @@ class _FakeAip:
         self.init_kwargs = kw
 
 
-def test_register_timesfm_step_uploads_with_contract() -> None:
-    aip = _FakeAip()
-    name = steps.register_timesfm_step(_cfg(), aiplatform=aip)
-    assert name == "projects/x/models/m"
-    kw = aip.upload_kwargs
-    assert kw is not None
-    assert kw["serving_container_predict_route"] == "/predict"
-    assert kw["serving_container_health_route"] == "/health"
-    assert kw["serving_container_ports"] == [8080]
-    assert kw["serving_container_image_uri"].endswith("geaptimes-runtime:latest")
-    assert kw["serving_container_environment_variables"]["TIMESFM_HORIZON"] == str(HORIZON)
-    assert kw["labels"] == {"solution": "geaptimes"}
-
-
-def test_deploy_endpoint_step() -> None:
-    aip = _FakeAip()
-    name = steps.deploy_endpoint_step(_cfg(), "projects/x/models/m", aiplatform=aip)
-    assert name == "projects/x/endpoints/e"
-    # endpoint created with our display name + labels (so teardown can find it later)
-    create = aip.create_kwargs
-    assert create is not None
-    assert create["display_name"] == "timesfm-endpoint__top25_h3_t14_v14"
-    assert create["labels"] == {"solution": "geaptimes"}
-    deployed = aip.model.deployed
-    assert deployed is not None
-    assert deployed["endpoint"] is aip.endpoint
-    assert deployed["machine_type"] == "n1-standard-4"
-    assert deployed["traffic_percentage"] == 100
-
-
 def test_endpoint_predict_step_builds_frame() -> None:
     aip = _FakeAip()
     frame = steps.endpoint_predict_step(

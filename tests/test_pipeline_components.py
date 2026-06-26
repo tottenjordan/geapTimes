@@ -195,36 +195,44 @@ def test_score_and_track_component(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
     assert isinstance(seen["tracker"], _FakeTracker)
 
 
-def test_register_and_deploy_components(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(steps, "register_timesfm_step", lambda _cfg: "projects/x/models/m")
-    monkeypatch.setattr(steps, "deploy_endpoint_step", lambda _cfg, name: f"ep-for-{name}")
-    registered = COMPS.register_timesfm.python_func(
-        config_json=CFG_JSON, prepped=_FakeDatasetArtifact()
-    )
-    assert registered == "projects/x/models/m"
-    deployed = COMPS.deploy_endpoint.python_func(config_json=CFG_JSON, model_resource_name="m")
-    assert deployed == "ep-for-m"
-
-
 def test_endpoint_predict_component(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    # The serving predict component now only emits the predictions artifact; scoring/tracking is
-    # the downstream shared score_and_track step.
-    monkeypatch.setattr(steps, "endpoint_predict_step", lambda _cfg, _name: _predictions())
+    # The serving predict component reads the Vertex endpoint resource name from the GCPC
+    # VertexEndpoint artifact's metadata, then only emits the predictions artifact; scoring/tracking
+    # is the downstream shared score_and_track step.
+    seen: dict[str, Any] = {}
+
+    def fake_predict(_cfg: object, endpoint_resource_name: str) -> pd.DataFrame:
+        seen["endpoint"] = endpoint_resource_name
+        return _predictions()
+
+    monkeypatch.setattr(steps, "endpoint_predict_step", fake_predict)
+    endpoint = _FakeDatasetArtifact()
+    endpoint.metadata["resourceName"] = "projects/x/endpoints/e"
     art = _FakeArtifact(str(tmp_path / "tfm.parquet"))
     out = COMPS.endpoint_predict.python_func(
-        config_json=CFG_JSON, endpoint_resource_name="ep", predictions=art
+        config_json=CFG_JSON, endpoint=endpoint, prepped=_FakeDatasetArtifact(), predictions=art
     )
     assert out is None
+    assert seen["endpoint"] == "projects/x/endpoints/e"
     assert len(pd.read_parquet(art.path)) == 2
 
 
 def test_batch_predict_component(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setattr(steps, "batch_predict_timesfm_step", lambda _cfg, _name: _predictions())
+    seen: dict[str, Any] = {}
+
+    def fake_batch(_cfg: object, model_resource_name: str) -> pd.DataFrame:
+        seen["model"] = model_resource_name
+        return _predictions()
+
+    monkeypatch.setattr(steps, "batch_predict_timesfm_step", fake_batch)
+    model = _FakeDatasetArtifact()
+    model.metadata["resourceName"] = "projects/x/models/m"
     art = _FakeArtifact(str(tmp_path / "tfm.parquet"))
     out = COMPS.batch_predict.python_func(
-        config_json=CFG_JSON, model_resource_name="m", predictions=art
+        config_json=CFG_JSON, model=model, prepped=_FakeDatasetArtifact(), predictions=art
     )
     assert out is None
+    assert seen["model"] == "projects/x/models/m"
     assert len(pd.read_parquet(art.path)) == 2
 
 

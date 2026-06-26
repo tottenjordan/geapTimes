@@ -34,3 +34,24 @@ def test_display_names_use_config_slug() -> None:
 
 def test_resource_labels() -> None:
     assert pcfg.resource_labels() == {"solution": "geaptimes"}
+
+
+def test_serving_env_vars_from_timesfm_params() -> None:
+    env = pcfg.serving_env_vars(_cfg(forecast={"horizon": 21}))
+    assert env["TIMESFM_HORIZON"] == "21"
+    assert env["TIMESFM_QUANTILES"] == "true"
+    assert env["TIMESFM_CHECKPOINT"]  # a non-empty checkpoint id
+
+
+def test_timesfm_container_spec_contract() -> None:
+    # The serving-container contract GCPC's ModelUploadOp consumes (via the importer's
+    # UnmanagedContainerModel artifact): image + predict/health routes + port + predictor env.
+    spec = pcfg.timesfm_container_spec(_cfg())
+    assert str(spec["imageUri"]).endswith("geaptimes-runtime:latest")
+    assert spec["predictRoute"] == "/predict"
+    assert spec["healthRoute"] == "/health"
+    assert spec["ports"] == [{"containerPort": 8080}]
+    env = spec["env"]
+    assert isinstance(env, list)
+    env_names = {item["name"] for item in env if isinstance(item, dict)}
+    assert {"TIMESFM_CHECKPOINT", "TIMESFM_HORIZON", "TIMESFM_QUANTILES"} <= env_names
