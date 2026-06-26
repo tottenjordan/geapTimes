@@ -37,6 +37,23 @@ def _executors(cfg: ExperimentConfig, tmp_path: Path) -> set[str]:
     return set(spec["deploymentSpec"]["executors"].keys())
 
 
+def _display_names(cfg: ExperimentConfig, tmp_path: Path) -> set[str]:
+    """All task display names (``taskInfo.name``) across the root + nested (ExitHandler) DAGs."""
+    out = compile_pipeline(cfg, tmp_path / "pipeline.yaml")
+    spec = yaml.safe_load(Path(out).read_text(encoding="utf-8"))
+    names: set[str] = set()
+
+    def collect(dag: dict) -> None:
+        for task in dag.get("tasks", {}).values():
+            names.add(task.get("taskInfo", {}).get("name", ""))
+
+    collect(spec["root"]["dag"])
+    for comp in spec.get("components", {}).values():
+        if "dag" in comp:
+            collect(comp["dag"])
+    return names
+
+
 def test_endpoint_mode_transient_full_graph(tmp_path: Path) -> None:
     execs = _executors(_cfg(ALL_THREE), tmp_path)
     assert "exec-build-tables" in execs
@@ -81,6 +98,28 @@ def test_timesfm_disabled_skips_serving(tmp_path: Path) -> None:
     assert "exec-deploy-endpoint" not in execs
     assert "exec-batch-predict" not in execs
     assert "exec-teardown-serving" not in execs
+
+
+def test_task_display_names_are_readable(tmp_path: Path) -> None:
+    names = _display_names(_cfg(ALL_THREE), tmp_path)
+    # The two run-backend tasks are disambiguated by model name (otherwise both render as
+    # "run-backend"/"run-backend-2" in the console).
+    assert "run-backend:bqml_arima_xreg" in names
+    assert "run-backend:automl" in names
+    assert {
+        "build-tables",
+        "register-timesfm",
+        "deploy-endpoint",
+        "timesfm:endpoint-predict",
+        "compare-backends",
+        "teardown-serving",
+    } <= names
+
+
+def test_batch_mode_display_name(tmp_path: Path) -> None:
+    names = _display_names(_cfg(ALL_THREE, serving={"mode": "batch"}), tmp_path)
+    assert "timesfm:batch-predict" in names
+    assert "timesfm:endpoint-predict" not in names
 
 
 def test_pipeline_name_and_config_param(tmp_path: Path) -> None:

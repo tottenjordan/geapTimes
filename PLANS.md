@@ -133,6 +133,24 @@ transient endpoint teardown, floor-budget AutoML run, and comparison artifact + 
 - **STOP** checkpoint: present the config switches, the factored core + serving container, the
   AutoML predict path, the KFP components + comparison DAG, the submit path, and the live results.
 
+### Stage 4 follow-up feedback (triaged 2026-06-26)
+
+Six pipeline-feedback points raised during the 4.9 live run, with disposition. None affect the
+in-flight run (improvements show up on the next deploy):
+
+| # | Feedback | Disposition |
+|---|----------|-------------|
+| 1 | Improve pipeline step names | **done now** — explicit `set_display_name` per task (`run-backend:<model>`, `build-tables`, …); compile test asserts them |
+| 2 | Make quantiles optional (force `minimize-quantile-loss` + adjust metrics only when enabled) | **deferred → Stage 5**, documented in `CODE_STANDARDS.md` (Deferred / backlog) |
+| 3 | Output artifacts for register-timesfm (model + markdown metadata summary) | **Stage 4 addendum** (decide with #5; GCPC ops emit these natively) |
+| 4 | Output artifacts for build-tables / run-backend / compare / deploy-endpoint | **Stage 4 addendum** (decide with #5) |
+| 5 | Adopt Google Cloud Pipeline Components where beneficial (esp. serving lifecycle) | **Stage 4 addendum** — proposal: adopt GCPC for serving infra (`ModelUploadOp`, `EndpointCreateOp`, `ModelDeployOp`, `ModelUndeployOp`/`EndpointDeleteOp`, optional `ModelBatchPredictOp`); keep custom components for logic+tracker steps; do **not** adopt the heavyweight AutoML tabular workflow |
+| 6 | Reuse an existing similar TimesFM deployment | **deferred → Stage 5** (coupled to warm/`keep_deployed` endpoints); design + LOE in `docs/notes/timesfm-endpoint-reuse-design.md` |
+
+Items #3/#4/#5 are coupled (GCPC serving ops deliver much of #3/#4's standardized artifacts +
+lineage for free) and will be folded into a **Stage 4 addendum** decided at the STOP checkpoint, so
+they land in one combined re-run.
+
 ---
 
 ## Tier 2 — Stage 3 (Experiment Tracking & DOE Framework) — COMPLETE

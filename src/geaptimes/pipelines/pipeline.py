@@ -61,37 +61,48 @@ def build_pipeline(cfg: "ExperimentConfig") -> "BaseComponent":
     def _body(config_json: str) -> None:
         tables = comps.build_tables(config_json=config_json)
         tables.set_caching_options(caching)
+        tables.set_display_name("build-tables")
         rows = []
         for model_name in in_process:
             backend = comps.run_backend(
                 config_json=config_json, model_name=model_name, tables=tables.output
             )
             backend.set_caching_options(caching)
+            # Per-task display name disambiguates the otherwise-identical run-backend tasks in the
+            # console (e.g. "run-backend:bqml_arima_xreg" vs "run-backend:automl").
+            backend.set_display_name(f"run-backend:{model_name}")
             rows.append(backend.outputs["Output"])
         if timesfm:
             register = comps.register_timesfm(config_json=config_json)
             register.set_caching_options(caching)
+            register.set_display_name("register-timesfm")
             if serving.mode == "endpoint":
                 deploy = comps.deploy_endpoint(
                     config_json=config_json, model_resource_name=register.output
                 )
                 deploy.set_caching_options(caching)
+                deploy.set_display_name("deploy-endpoint")
                 served = comps.endpoint_predict(
                     config_json=config_json, endpoint_resource_name=deploy.output
                 )
+                served.set_display_name("timesfm:endpoint-predict")
             else:
                 served = comps.batch_predict(
                     config_json=config_json, model_resource_name=register.output
                 )
+                served.set_display_name("timesfm:batch-predict")
             served.set_caching_options(caching)
             rows.append(served.outputs["Output"])
         compare = comps.compare_backends(rows=rows)
         compare.set_caching_options(caching)
+        compare.set_display_name("compare-backends")
 
     @dsl.pipeline(name=name, pipeline_root=root)
     def comparison(config_json: str = default_config_json) -> None:
         if needs_teardown:
-            with dsl.ExitHandler(comps.teardown_serving(config_json=config_json)):
+            teardown = comps.teardown_serving(config_json=config_json)
+            teardown.set_display_name("teardown-serving")
+            with dsl.ExitHandler(teardown):
                 _body(config_json)
         else:
             _body(config_json)

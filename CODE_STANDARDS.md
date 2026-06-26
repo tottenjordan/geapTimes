@@ -115,3 +115,12 @@ submit + pod startup (~5 min per iteration). Catch those failures cheaply instea
 
 - Security pre-commit hooks (detect-secrets, shellcheck, actionlint, zizmor) from the
   `modern-python` skill are deferred; revisit before any public release.
+- **Optional quantile forecasting (Stage 5).** Quantiles are currently always emitted
+  (`QUANTILES = [0.1, 0.3, 0.5, 0.7, 0.9]`), which forces AutoML's `optimization_objective` to
+  `minimize-quantile-loss` and bakes the `qXX` columns into every prediction frame. Make this a
+  config switch: when quantiles are enabled, keep the current behaviour (force
+  `minimize-quantile-loss`, emit `qXX`, and add **quantile loss** to the metric suite); when
+  disabled, drop the `qXX` columns, relax the AutoML objective constraint (allow e.g.
+  `minimize-rmse`), and skip quantile metrics. Touches `models/base.py` (column constants),
+  `schemas.py` (a `quantiles` flag at the data/forecast level), `models/automl.py`
+  (`validate_config()` + `run_kwargs`), the metric suite, and the serving env (`TIMESFM_QUANTILES`).
