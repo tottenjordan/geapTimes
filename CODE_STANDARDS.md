@@ -22,6 +22,31 @@ this document. (`CLAUDE.md` links here.)
 - **Tests:** **`pytest`**. `uv run pytest`.
 - Config for all of the above lives in `pyproject.toml`.
 
+## Cloud preflight (validate before deploying a pipeline)
+
+The offline gate (`ruff check` → `ruff format --check` → `ty check` → `pytest`) is mandatory before
+any commit, but it cannot see Vertex's **server-side** validation of managed jobs (AutoML, pipeline
+components). Reaching that validation through a full pipeline deploy costs a container rebuild +
+submit + pod startup (~5 min per iteration). Catch those failures cheaply instead:
+
+- **Encode every server-side rule you discover as an offline invariant** with a unit test, so a
+  regression fails at `pytest` time for free. Example: `AutoMLForecaster.validate_config()` checks
+  the Vertex AutoML Forecasting column-role rules (target ∈ unavailable-at-forecast, time column ∈
+  available-at-forecast, the series identifier carries **no** transformation, every feature/target
+  carries a transformation, quantiles ⇒ `minimize-quantile-loss`).
+- **Run the live preflight before submitting** to exercise Vertex's real `create_training_pipeline`
+  validation in seconds, with **no training spend**:
+  ```bash
+  GCP_PROJECT=hybrid-vertex uv run python -m geaptimes.pipelines.submit \
+      --config config/comparison_config.yaml --preflight-automl
+  ```
+  It runs `fit(sync=False)` and waits only for the training-pipeline *resource* to be created (where
+  column/role validation runs), then cancels + deletes the probe job (it reaches `CANCELLED` before
+  any billable compute). A clean `AutoML preflight PASSED` means the config will clear validation in
+  the deployed pipeline.
+- Every new server-side error must be fixed **and** added to the static validator + a test, so the
+  slow cloud loop is paid at most once per rule.
+
 ## Source layout
 
 - `src/` layout: the importable package is `src/geaptimes/`. Import as `from geaptimes... import ...`.
