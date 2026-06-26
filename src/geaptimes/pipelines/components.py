@@ -80,7 +80,10 @@ def build_components(image: str) -> PipelineComponents:  # noqa: PLR0915, C901 -
         config_json: str,
         model_name: str,
         predictions: dsl.Input[dsl.Dataset],
-    ) -> dict:
+    ) -> str:
+        import base64
+        import json
+
         import pandas as pd
 
         from geaptimes.experiment.tracking import ExperimentTracker
@@ -91,11 +94,18 @@ def build_components(image: str) -> PipelineComponents:  # noqa: PLR0915, C901 -
         frame = pd.read_parquet(predictions.path)
         result = steps.score_and_track_step(cfg, model_name, frame, tracker=ExperimentTracker(cfg))
         metrics = result.record.metrics
-        return {
-            "model": result.record.model,
-            "mae": float(metrics["mae"]),
-            "rmse": float(metrics["rmse"]),
-        }
+        # Return base64(JSON), not a dict or raw JSON string. compare_backends collects these into a
+        # ``list`` param, which KFP builds by *textual* placeholder substitution into the executor
+        # input JSON -- a raw JSON value's quotes would break that JSON (and a dict has no
+        # resolvable list-element type). base64's alphabet is both JSON- and substitution-safe.
+        payload = json.dumps(
+            {
+                "model": result.record.model,
+                "mae": float(metrics["mae"]),
+                "rmse": float(metrics["rmse"]),
+            }
+        )
+        return base64.b64encode(payload.encode("utf-8")).decode("ascii")
 
     @dsl.component(base_image=image)
     def register_timesfm(config_json: str) -> str:
@@ -149,12 +159,15 @@ def build_components(image: str) -> PipelineComponents:  # noqa: PLR0915, C901 -
 
     @dsl.component(base_image=image)
     def compare_backends(rows: list, comparison: dsl.Output[dsl.Dataset]) -> str:
+        import base64
         import json
         from pathlib import Path
 
         from geaptimes.pipelines import steps
 
-        result = steps.compare_step([(row["model"], row) for row in rows])
+        # ``rows`` are base64(JSON) strings emitted by score_and_track (see the note there).
+        parsed = [json.loads(base64.b64decode(row)) for row in rows]
+        result = steps.compare_step([(row["model"], row) for row in parsed])
         with Path(comparison.path).open("w", encoding="utf-8") as fh:
             json.dump({"winner": result.winner, "ranking": result.ranking}, fh, indent=2)
         return result.winner

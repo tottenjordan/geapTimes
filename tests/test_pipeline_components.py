@@ -5,7 +5,9 @@ called directly with the step seams monkeypatched — exercising the shell wirin
 delegation to ``steps``, Parquet artifact writes, the returned metrics dict) without KFP or cloud.
 """
 
+import base64
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -129,7 +131,16 @@ def test_score_and_track_component(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
     out = COMPS.score_and_track.python_func(
         config_json=CFG_JSON, model_name="bqml_arima_xreg", predictions=art
     )
-    assert out == {"model": "bqml_arima_xreg", "mae": 1.5, "rmse": 2.5}
+    # Substitution-safe contract: score_and_track outputs are collected into compare_backends'
+    # ``rows`` list, which KFP builds by *textual* substitution into the executor-input JSON. The
+    # output must therefore contain no character (``"`` ``,`` ``]``) that could break that JSON --
+    # i.e. it must stay within the base64 alphabet. (Regressing to raw JSON re-breaks the live run.)
+    assert re.fullmatch(r"[A-Za-z0-9+/=]+", out)
+    assert json.loads(base64.b64decode(out)) == {
+        "model": "bqml_arima_xreg",
+        "mae": 1.5,
+        "rmse": 2.5,
+    }
     assert seen["model_name"] == "bqml_arima_xreg"
     assert isinstance(seen["tracker"], _FakeTracker)
 
@@ -174,8 +185,10 @@ def test_teardown_serving_component(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_compare_backends_component(tmp_path: Path) -> None:
     art = _FakeArtifact(str(tmp_path / "comparison.json"))
     rows = [
-        {"model": "timesfm", "mae": 80.0, "rmse": 110.0},
-        {"model": "bqml_arima_xreg", "mae": 77.0, "rmse": 101.0},
+        base64.b64encode(json.dumps({"model": "timesfm", "mae": 80.0, "rmse": 110.0}).encode()),
+        base64.b64encode(
+            json.dumps({"model": "bqml_arima_xreg", "mae": 77.0, "rmse": 101.0}).encode()
+        ),
     ]
     winner = COMPS.compare_backends.python_func(rows=rows, comparison=art)
     assert winner == "bqml_arima_xreg"
