@@ -3,7 +3,8 @@
 import pandas as pd
 import pytest
 
-from geaptimes.models.automl import AutoMLForecaster
+from geaptimes.constants import RESOURCE_LABELS
+from geaptimes.models.automl import AutoMLForecaster, _label_bq_table
 from geaptimes.models.base import PREDICTION_COLUMNS, QUANTILES
 from geaptimes.schemas import ExperimentConfig
 
@@ -264,3 +265,59 @@ def test_flatten_raises_on_missing_quantile_level() -> None:
     fc = AutoMLForecaster(cfg.models[0], cfg, prediction_reader=lambda: raw)
     with pytest.raises(ValueError, match=r"quantile level 0\.9 not found"):
         fc.predict()
+
+
+# -- output table resolution + labelling (live-run regressions, 4.9) -------------------------------
+class _FakeOutputInfo:
+    def __init__(self, dataset: str, table: str) -> None:
+        self.bigquery_output_dataset = dataset
+        self.bigquery_output_table = table
+
+
+class _FakeBatchJob:
+    def __init__(self, dataset: str, table: str) -> None:
+        self.output_info = _FakeOutputInfo(dataset, table)
+
+
+def test_output_table_id_uses_job_suffix() -> None:
+    # Regression: Vertex names the table predictions_<ts>; we must read the suffix from the job,
+    # never hardcode ".predictions" (which 404'd on the first live run).
+    job = _FakeBatchJob("bq://p.ds", "predictions_2026_06_26T01_44_29_529Z_164")
+    assert (
+        AutoMLForecaster._output_table_id(job)  # noqa: SLF001 - exercising the resolution rule
+        == "p.ds.predictions_2026_06_26T01_44_29_529Z_164"
+    )
+
+
+class _FakeBqTable:
+    def __init__(self) -> None:
+        self.labels: dict[str, str] = {}
+
+
+class _FakeBqClient:
+    def __init__(self) -> None:
+        self.table = _FakeBqTable()
+        self.updated_fields: list[str] | None = None
+
+    def get_table(self, _table_id: str) -> _FakeBqTable:
+        return self.table
+
+    def update_table(self, _table: _FakeBqTable, fields: list[str]) -> None:
+        self.updated_fields = fields
+
+
+def test_label_bq_table_stamps_solution_label() -> None:
+    client = _FakeBqClient()
+    _label_bq_table(client, "p.ds.predictions_x")
+    assert client.table.labels["solution"] == RESOURCE_LABELS["solution"]
+    assert client.updated_fields == ["labels"]
+
+
+def test_label_bq_table_is_best_effort() -> None:
+    class _Boom:
+        def get_table(self, _t: str) -> object:
+            msg = "transient bq error"
+            raise RuntimeError(msg)
+
+    # A labelling failure must not propagate (governance nit, not a result error).
+    _label_bq_table(_Boom(), "p.ds.predictions_x")

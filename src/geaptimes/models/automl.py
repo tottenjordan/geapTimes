@@ -55,6 +55,23 @@ _QUANTILE_PREDICTIONS_FIELD = "quantile_predictions"
 _QUANTILE_MATCH_TOLERANCE = 1e-6
 
 
+def _label_bq_table(client: Any, table_id: str) -> None:  # noqa: ANN401 - external SDK client
+    """Best-effort stamp of ``RESOURCE_LABELS`` on a table Vertex created without labels.
+
+    Vertex's batch-prediction service applies the job's labels to the ``BatchPredictionJob``
+    resource but **not** to the auto-created ``predictions_<ts>`` output table, so we set them
+    explicitly to keep every asset carrying ``solution=geaptimes``. A failure here (e.g. a transient
+    BigQuery error) is a governance nit, not a result error, so it is logged and swallowed rather
+    than failing the backend.
+    """
+    try:
+        table = client.get_table(table_id)
+        table.labels = {**(table.labels or {}), **RESOURCE_LABELS}
+        client.update_table(table, ["labels"])
+    except Exception:  # noqa: BLE001 - labelling is best-effort governance, never fatal
+        logger.warning("could not label predictions table %s", table_id, exc_info=True)
+
+
 def _match_quantile_index(levels: "list[float]", level: float) -> int:
     """Index of ``level`` within the model's emitted quantile levels (float-tolerant)."""
     for i, candidate in enumerate(levels):
@@ -272,15 +289,27 @@ class AutoMLForecaster(Forecaster):
         job = self.model.batch_predict(**self.batch_predict_kwargs())  # pragma: no cover - live
         return self._read_output_table(job)  # pragma: no cover - live only
 
+    @staticmethod
+    def _output_table_id(job: Any) -> str:  # noqa: ANN401 - external SDK job
+        """Fully-qualified id of the table Vertex wrote the batch predictions to.
+
+        Vertex auto-creates a *timestamped* ``predictions_<ts>`` table in the destination dataset;
+        the exact name is read from ``output_info.bigquery_output_table`` (the ``_<ts>`` suffix is
+        per-run, so it must never be hardcoded). The name is resolved from the job output, not user
+        input.
+        """
+        info = job.output_info
+        dataset = info.bigquery_output_dataset.removeprefix("bq://")
+        return f"{dataset}.{info.bigquery_output_table}"
+
     def _read_output_table(self, job: Any) -> "pd.DataFrame":  # noqa: ANN401 - external SDK job
-        """Read the BQ table Vertex wrote the batch predictions to (resolved from the job)."""
+        """Read (and label) the BQ table Vertex wrote the batch predictions to."""
         from google.cloud import bigquery  # noqa: PLC0415 - lazy cloud import
 
-        dataset = job.output_info.bigquery_output_dataset.removeprefix("bq://")
-        table = f"{dataset}.predictions"
-        # Table name resolved from the Vertex job output, not user input.
-        sql = f"SELECT * FROM `{table}`"  # noqa: S608
+        table_id = self._output_table_id(job)
         client = bigquery.Client(project=self.cfg.project.id)
+        _label_bq_table(client, table_id)
+        sql = f"SELECT * FROM `{table_id}`"  # noqa: S608
         return client.query(sql).to_dataframe()
 
     def _flatten_automl_output(self, raw: "pd.DataFrame", pd: Any) -> "pd.DataFrame":  # noqa: ANN401
