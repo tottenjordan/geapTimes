@@ -59,7 +59,17 @@ def build_pipeline(cfg: "ExperimentConfig") -> "BaseComponent":  # noqa: PLR0915
     needs_teardown = timesfm and serving.mode == "endpoint" and not serving.keep_deployed
 
     def _body(config_json: str) -> None:
-        tables = comps.build_tables(config_json=config_json)
+        # Self-bootstrapping data prep: ensure source -> prepped exist (guarded by an
+        # existence + config-fingerprint check inside the steps), then derive train/infer. The
+        # prepped Dataset artifact flows from ensure-prepped into build-tables AND the TimesFM
+        # serving branch, so every backend has a real data-lineage edge back to prepped.
+        source = comps.ensure_source(config_json=config_json)
+        source.set_caching_options(caching)
+        source.set_display_name("ensure-source")
+        prepped = comps.ensure_prepped(config_json=config_json, source=source.outputs["source"])
+        prepped.set_caching_options(caching)
+        prepped.set_display_name("ensure-prepped")
+        tables = comps.build_tables(config_json=config_json, prepped=prepped.outputs["prepped"])
         tables.set_caching_options(caching)
         tables.set_display_name("build-tables")
         rows = []
@@ -95,7 +105,7 @@ def build_pipeline(cfg: "ExperimentConfig") -> "BaseComponent":  # noqa: PLR0915
             # The prepped Dataset artifact is the lineage edge into the serving branch: the served
             # TimesFM model reads its context from the prepped table at predict time.
             register = comps.register_timesfm(
-                config_json=config_json, prepped=tables.outputs["prepped"]
+                config_json=config_json, prepped=prepped.outputs["prepped"]
             )
             register.set_caching_options(caching)
             register.set_display_name("register-timesfm")

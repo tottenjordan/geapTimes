@@ -23,6 +23,8 @@ from kfp import dsl
 class PipelineComponents:
     """The compiled KFP components for the comparison pipeline, bound to one runtime image."""
 
+    ensure_source: Any
+    ensure_prepped: Any
     build_tables: Any
     train_backend: Any
     infer_backend: Any
@@ -44,9 +46,42 @@ def build_components(image: str) -> PipelineComponents:  # noqa: PLR0915, C901 -
     """
 
     @dsl.component(base_image=image)
+    def ensure_source(config_json: str, source: dsl.Output[dsl.Dataset]) -> None:
+        from geaptimes.naming import config_fingerprint_hash
+        from geaptimes.pipelines import steps
+        from geaptimes.schemas import ExperimentConfig
+
+        cfg = ExperimentConfig.model_validate_json(config_json)
+        ref = steps.ensure_source_step(cfg)
+        # Emit a table-reference lineage Dataset artifact: a BigQuery *reference* (bq:// uri +
+        # fingerprint + rows), not the data itself, opening the source->prepped lineage chain.
+        source.uri = f"bq://{ref.name}"
+        source.metadata["table"] = ref.name
+        source.metadata["rows"] = ref.rows
+        source.metadata["fingerprint"] = config_fingerprint_hash(cfg)
+
+    @dsl.component(base_image=image)
+    def ensure_prepped(
+        config_json: str,
+        source: dsl.Input[dsl.Dataset],
+        prepped: dsl.Output[dsl.Dataset],
+    ) -> None:
+        from geaptimes.naming import config_fingerprint_hash
+        from geaptimes.pipelines import steps
+        from geaptimes.schemas import ExperimentConfig
+
+        _ = source  # lineage + ordering edge: prepped is derived from the source table
+        cfg = ExperimentConfig.model_validate_json(config_json)
+        ref = steps.ensure_prepped_step(cfg)
+        prepped.uri = f"bq://{ref.name}"
+        prepped.metadata["table"] = ref.name
+        prepped.metadata["rows"] = ref.rows
+        prepped.metadata["fingerprint"] = config_fingerprint_hash(cfg)
+
+    @dsl.component(base_image=image)
     def build_tables(
         config_json: str,
-        prepped: dsl.Output[dsl.Dataset],
+        prepped: dsl.Input[dsl.Dataset],
         train: dsl.Output[dsl.Dataset],
         infer: dsl.Output[dsl.Dataset],
     ) -> None:
@@ -54,13 +89,12 @@ def build_components(image: str) -> PipelineComponents:  # noqa: PLR0915, C901 -
         from geaptimes.pipelines import steps
         from geaptimes.schemas import ExperimentConfig
 
+        _ = prepped  # lineage + ordering edge: train/infer are derived from the prepped table
         cfg = ExperimentConfig.model_validate_json(config_json)
         refs = steps.build_tables_step(cfg)
         fingerprint = config_fingerprint_hash(cfg)
-        # Emit one lineage Dataset artifact per table: a BigQuery *reference* (bq:// uri +
-        # fingerprint + rows), not the data itself. Wiring these into the backends + serving steps
-        # gives ML-Metadata a real data->model->prediction lineage chain.
-        for role, artifact in (("prepped", prepped), ("train", train), ("infer", infer)):
+        # One lineage Dataset artifact per built table (bq:// reference, not the data itself).
+        for role, artifact in (("train", train), ("infer", infer)):
             ref = refs[role]
             artifact.uri = f"bq://{ref.name}"
             artifact.metadata["table"] = ref.name
@@ -195,6 +229,8 @@ def build_components(image: str) -> PipelineComponents:  # noqa: PLR0915, C901 -
         return result.winner
 
     return PipelineComponents(
+        ensure_source=ensure_source,
+        ensure_prepped=ensure_prepped,
         build_tables=build_tables,
         train_backend=train_backend,
         infer_backend=infer_backend,

@@ -56,6 +56,9 @@ def _display_names(cfg: ExperimentConfig, tmp_path: Path) -> set[str]:
 
 def test_endpoint_mode_transient_full_graph(tmp_path: Path) -> None:
     execs = _executors(_cfg(ALL_THREE), tmp_path)
+    # self-bootstrapping data-prep front steps
+    assert "exec-ensure-source" in execs
+    assert "exec-ensure-prepped" in execs
     assert "exec-build-tables" in execs
     assert "exec-register-timesfm" in execs
     assert "exec-deploy-endpoint" in execs
@@ -118,6 +121,8 @@ def test_task_display_names_are_readable(tmp_path: Path) -> None:
         "score:timesfm",
     } <= names
     assert {
+        "ensure-source",
+        "ensure-prepped",
         "build-tables",
         "register-timesfm",
         "deploy-endpoint",
@@ -145,10 +150,12 @@ def _tasks_by_name(cfg: ExperimentConfig, tmp_path: Path) -> dict[str, dict]:
 
 
 def test_table_artifacts_wire_data_lineage_into_every_backend(tmp_path: Path) -> None:
-    """build_tables' table Dataset artifacts feed train/infer AND the TimesFM serving branch.
+    """The table Dataset artifacts form one source->prepped->{train,infer,timesfm} lineage chain.
 
-    This is the data->serving lineage edge: register-timesfm consuming ``prepped`` is what closes
-    the previously edge-less serving branch (it used to depend on nothing).
+    The self-bootstrapping front steps own the source/prepped artifacts: ensure-prepped derives its
+    ``prepped`` from ensure-source's ``source`` and feeds it into both build-tables and the TimesFM
+    serving branch; build-tables derives train/infer from prepped. register-timesfm consuming
+    ``prepped`` is what closes the previously edge-less serving branch.
     """
     tasks = _tasks_by_name(_cfg(ALL_THREE), tmp_path)
 
@@ -156,10 +163,13 @@ def test_table_artifacts_wire_data_lineage_into_every_backend(tmp_path: Path) ->
         src = tasks[task]["inputs"]["artifacts"][key]["taskOutputArtifact"]
         return f"{src['producerTask']}.{src['outputArtifactKey']}"
 
+    assert artifact_source("ensure-prepped", "source") == "ensure-source.source"
+    assert artifact_source("build-tables", "prepped") == "ensure-prepped.prepped"
     assert artifact_source("train-backend", "train") == "build-tables.train"
     assert artifact_source("infer-backend", "infer") == "build-tables.infer"
-    assert artifact_source("register-timesfm", "prepped") == "build-tables.prepped"
-    assert "build-tables" in tasks["register-timesfm"]["dependentTasks"]
+    assert artifact_source("register-timesfm", "prepped") == "ensure-prepped.prepped"
+    assert "ensure-prepped" in tasks["register-timesfm"]["dependentTasks"]
+    assert "ensure-source" in tasks["ensure-prepped"]["dependentTasks"]
 
 
 def test_pipeline_name_and_config_param(tmp_path: Path) -> None:

@@ -10,7 +10,12 @@ unit-tests offline with fakes — the same discipline as the Stage 2/3 forecaste
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from geaptimes.data.queries import build_infer_query, build_train_query
+from geaptimes.data.queries import (
+    build_infer_query,
+    build_prepped_query,
+    build_source_query,
+    build_train_query,
+)
 from geaptimes.experiment.metrics import point_metrics
 from geaptimes.experiment.runner import (
     RunRecord,
@@ -29,7 +34,7 @@ from geaptimes.models.base import (
     quantile_column,
 )
 from geaptimes.models.factory import ForecastFactory
-from geaptimes.naming import table_names
+from geaptimes.naming import config_fingerprint_hash, table_names
 from geaptimes.pipelines.config import (
     image_uri,
     pipeline_root,
@@ -176,6 +181,79 @@ def _default_frame_loader(cfg: "ExperimentConfig") -> "pd.DataFrame":  # pragma:
 
 
 # -- steps ----------------------------------------------------------------------------------------
+def ensure_source_step(
+    cfg: "ExperimentConfig",
+    *,
+    table_inspector: "Callable[[str], str | None] | None" = None,
+    query_runner: "Callable[[str], Any] | None" = None,
+    row_counter: "Callable[[str], int] | None" = None,
+    force: bool = False,
+) -> TableRef:
+    """Build the daily ``source`` table if absent or stale; return its :class:`TableRef`.
+
+    Self-bootstrapping front step: the pipeline no longer assumes an out-of-band Stage 1 notebook
+    ran first. The guard is *existence + fingerprint* — ``table_inspector`` returns the fingerprint
+    stored in the table's description (``None`` when the table does not exist), and a rebuild runs
+    only when it is missing or differs from the current :func:`config_fingerprint_hash`. Since the
+    frozen public window makes ``source`` effectively static, the common case is a cheap skip (a
+    naive ``CREATE OR REPLACE`` would re-bill the multi-GB scan every run).
+    """
+    inspect = table_inspector or (lambda name: _table_fingerprint(cfg, name))
+    run = query_runner or (lambda sql: _run_bq(cfg, sql))
+    count = row_counter or (lambda name: _count_rows(cfg, name))
+    source = _qualified(cfg, "source")
+    fingerprint = config_fingerprint_hash(cfg)
+    if not force and inspect(source) == fingerprint:
+        logger.info("source table %s current (fingerprint %s) - skip rebuild", source, fingerprint)
+        return TableRef(source, count(source))
+    logger.info("building source table %s", source)
+    run(build_source_query(cfg.data, source, description=fingerprint))
+    return TableRef(source, count(source))
+
+
+def ensure_prepped_step(
+    cfg: "ExperimentConfig",
+    *,
+    table_inspector: "Callable[[str], str | None] | None" = None,
+    query_runner: "Callable[[str], Any] | None" = None,
+    row_counter: "Callable[[str], int] | None" = None,
+    force: bool = False,
+) -> TableRef:
+    """Build the ``prepped`` table (adds the ``splits`` column) from ``source`` if absent or stale.
+
+    Same existence + fingerprint guard as :func:`ensure_source_step`. ``prepped`` is split apart
+    from ``source`` because it changes with covariate/split config while ``source`` changes ~never,
+    so the two cache independently and the lineage chain (source -> prepped -> {train, infer,
+    timesfm}) stays clean.
+    """
+    inspect = table_inspector or (lambda name: _table_fingerprint(cfg, name))
+    run = query_runner or (lambda sql: _run_bq(cfg, sql))
+    count = row_counter or (lambda name: _count_rows(cfg, name))
+    source = _qualified(cfg, "source")
+    prepped = _qualified(cfg, "prepped")
+    fingerprint = config_fingerprint_hash(cfg)
+    if not force and inspect(prepped) == fingerprint:
+        logger.info("prepped table %s current (fingerprint %s) - skip", prepped, fingerprint)
+        return TableRef(prepped, count(prepped))
+    logger.info("building prepped table %s from %s", prepped, source)
+    run(build_prepped_query(cfg.data, source, prepped, description=fingerprint))
+    return TableRef(prepped, count(prepped))
+
+
+def _table_fingerprint(  # pragma: no cover - live
+    cfg: "ExperimentConfig", table: str
+) -> str | None:
+    """Read a table's stored fingerprint (its description), or ``None`` if it does not exist."""
+    from google.api_core.exceptions import NotFound  # noqa: PLC0415 - lazy cloud import
+    from google.cloud import bigquery  # noqa: PLC0415 - lazy cloud import
+
+    client = bigquery.Client(project=cfg.project.id)
+    try:
+        return client.get_table(table).description
+    except NotFound:
+        return None
+
+
 def build_tables_step(
     cfg: "ExperimentConfig",
     *,
@@ -186,7 +264,9 @@ def build_tables_step(
 
     Each :class:`TableRef` carries the fully-qualified name + row count so the ``build_tables``
     component can emit a lineage ``Dataset`` artifact per table (``bq://`` uri + fingerprint +
-    rows), giving every downstream backend (TimesFM serving included) a real data lineage edge.
+    rows). ``prepped`` is produced (and its artifact emitted) upstream by
+    :func:`ensure_prepped_step` and flows in as the lineage edge; train/infer are cheap CTAS views
+    rebuilt every run.
     """
     run = query_runner or (lambda sql: _run_bq(cfg, sql))
     count = row_counter or (lambda name: _count_rows(cfg, name))
@@ -198,7 +278,6 @@ def build_tables_step(
     logger.info("building infer table %s", infer)
     run(build_infer_query(cfg.data, prepped, infer))
     return {
-        "prepped": TableRef(prepped, count(prepped)),
         "train": TableRef(train, count(train)),
         "infer": TableRef(infer, count(infer)),
     }

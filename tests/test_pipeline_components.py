@@ -80,12 +80,36 @@ class _FakeDatasetArtifact:
         self.metadata: dict[str, Any] = {}
 
 
+def test_ensure_source_component(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(steps, "ensure_source_step", lambda _cfg: steps.TableRef("p.ds.src__x", 44))
+    source = _FakeDatasetArtifact()
+    out = COMPS.ensure_source.python_func(config_json=CFG_JSON, source=source)
+    assert out is None  # emits a lineage artifact, no return value
+    assert source.uri == "bq://p.ds.src__x"
+    assert source.metadata["table"] == "p.ds.src__x"
+    assert source.metadata["rows"] == 44
+    assert source.metadata["fingerprint"]  # a non-empty config fingerprint
+
+
+def test_ensure_prepped_component(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        steps, "ensure_prepped_step", lambda _cfg: steps.TableRef("p.ds.prepped__x", 90)
+    )
+    prepped = _FakeDatasetArtifact()
+    out = COMPS.ensure_prepped.python_func(
+        config_json=CFG_JSON, source=_FakeDatasetArtifact(), prepped=prepped
+    )
+    assert out is None
+    assert prepped.uri == "bq://p.ds.prepped__x"
+    assert prepped.metadata["rows"] == 90
+    assert prepped.metadata["fingerprint"]
+
+
 def test_build_tables_component(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         steps,
         "build_tables_step",
         lambda _cfg: {
-            "prepped": steps.TableRef("p.ds.prepped__x", 100),
             "train": steps.TableRef("p.ds.train__x", 80),
             "infer": steps.TableRef("p.ds.infer__x", 20),
         },
@@ -97,10 +121,10 @@ def test_build_tables_component(monkeypatch: pytest.MonkeyPatch) -> None:
     assert out is None  # build_tables now emits artifacts, no return value
     assert infer.uri == "bq://p.ds.infer__x"
     assert train.metadata["rows"] == 80
-    assert prepped.metadata["table"] == "p.ds.prepped__x"
-    # Every table artifact carries the same config fingerprint (a non-empty hash).
-    assert prepped.metadata["fingerprint"] == infer.metadata["fingerprint"]
-    assert prepped.metadata["fingerprint"]
+    assert train.metadata["table"] == "p.ds.train__x"
+    # train + infer carry the same config fingerprint (a non-empty hash); prepped is an *input*.
+    assert train.metadata["fingerprint"] == infer.metadata["fingerprint"]
+    assert train.metadata["fingerprint"]
 
 
 def test_train_backend_component(monkeypatch: pytest.MonkeyPatch) -> None:

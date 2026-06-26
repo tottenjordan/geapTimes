@@ -7,6 +7,7 @@ import pandas as pd
 
 from geaptimes.experiment.tracking import ExperimentTracker
 from geaptimes.models.base import PREDICTION_COLUMNS, Forecaster, ForecastResult
+from geaptimes.naming import config_fingerprint_hash
 from geaptimes.pipelines import steps
 from geaptimes.schemas import ExperimentConfig, ModelConfig
 
@@ -45,6 +46,77 @@ def _frame(n_series: int = 2, days: int = 80) -> pd.DataFrame:
     return pd.concat(frames, ignore_index=True)
 
 
+# -- ensure_source / ensure_prepped ---------------------------------------------------------------
+def test_ensure_source_step_rebuilds_when_missing() -> None:
+    seen: list[str] = []
+    ref = steps.ensure_source_step(
+        _cfg(),
+        table_inspector=lambda _name: None,  # table does not exist
+        query_runner=seen.append,
+        row_counter=lambda _name: 42,
+    )
+    assert ref.name == "p.ds.citibike_daily_source__top25"
+    assert ref.rows == 42
+    assert len(seen) == 1
+    assert "CREATE OR REPLACE TABLE" in seen[0]
+    # the rebuild DDL stamps the current config fingerprint into the table description
+    assert f'description="{config_fingerprint_hash(_cfg())}"' in seen[0]
+
+
+def test_ensure_source_step_skips_when_current() -> None:
+    seen: list[str] = []
+    fingerprint = config_fingerprint_hash(_cfg())
+    ref = steps.ensure_source_step(
+        _cfg(),
+        table_inspector=lambda _name: fingerprint,  # stored fingerprint matches -> skip
+        query_runner=seen.append,
+        row_counter=lambda _name: 9,
+    )
+    assert ref.name == "p.ds.citibike_daily_source__top25"
+    assert ref.rows == 9
+    assert seen == []  # no rebuild
+
+
+def test_ensure_source_step_force_rebuilds_even_when_current() -> None:
+    seen: list[str] = []
+    fingerprint = config_fingerprint_hash(_cfg())
+    steps.ensure_source_step(
+        _cfg(),
+        table_inspector=lambda _name: fingerprint,
+        query_runner=seen.append,
+        row_counter=lambda _name: 1,
+        force=True,
+    )
+    assert len(seen) == 1  # force overrides the up-to-date guard
+
+
+def test_ensure_prepped_step_rebuilds_from_source_when_stale() -> None:
+    seen: list[str] = []
+    ref = steps.ensure_prepped_step(
+        _cfg(),
+        table_inspector=lambda _name: "stale-fingerprint",  # differs -> rebuild
+        query_runner=seen.append,
+        row_counter=lambda _name: 100,
+    )
+    assert ref.name == "p.ds.citibike_daily_prepped__top25_h3_t14_v14"
+    assert ref.rows == 100
+    assert len(seen) == 1
+    assert "AS splits" in seen[0]
+    assert "FROM `p.ds.citibike_daily_source__top25`" in seen[0]
+
+
+def test_ensure_prepped_step_skips_when_current() -> None:
+    seen: list[str] = []
+    ref = steps.ensure_prepped_step(
+        _cfg(),
+        table_inspector=lambda _name: config_fingerprint_hash(_cfg()),
+        query_runner=seen.append,
+        row_counter=lambda _name: 5,
+    )
+    assert ref.rows == 5
+    assert seen == []
+
+
 # -- build_tables ---------------------------------------------------------------------------------
 def test_build_tables_step_runs_train_and_infer() -> None:
     seen: list[str] = []
@@ -53,7 +125,7 @@ def test_build_tables_step_runs_train_and_infer() -> None:
     )
     assert refs["train"].name == "p.ds.citibike_daily_train__top25_h3_t14_v14"
     assert refs["infer"].name == "p.ds.citibike_daily_infer__top25_h3_t14_v14"
-    assert refs["prepped"].name == "p.ds.citibike_daily_prepped__top25_h3_t14_v14"
+    assert "prepped" not in refs  # prepped is produced upstream by ensure_prepped_step
     assert refs["train"].rows == 7
     assert refs["infer"].rows == 3
     assert len(seen) == 2
