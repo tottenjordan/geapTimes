@@ -66,9 +66,12 @@ def build_pipeline(cfg: "ExperimentConfig") -> "BaseComponent":  # noqa: PLR0915
         for model_name in in_process:
             # Each in-process backend is a train -> infer -> score chain. The trained model is
             # passed by reference from train to infer (so an infer-side failure re-uses the cached
-            # trained model), and the predictions flow to the one shared score-and-track step.
+            # trained model), and the predictions flow to the one shared score-and-track step. The
+            # train/infer table Dataset artifacts are wired in for data lineage (and ordering).
             train = comps.train_backend(
-                config_json=config_json, model_name=model_name, tables=tables.output
+                config_json=config_json,
+                model_name=model_name,
+                train=tables.outputs["train"],
             )
             train.set_caching_options(caching)
             train.set_display_name(f"train:{model_name}")
@@ -76,6 +79,7 @@ def build_pipeline(cfg: "ExperimentConfig") -> "BaseComponent":  # noqa: PLR0915
                 config_json=config_json,
                 model_name=model_name,
                 model_reference=train.output,
+                infer=tables.outputs["infer"],
             )
             infer.set_caching_options(caching)
             infer.set_display_name(f"infer:{model_name}")
@@ -88,7 +92,11 @@ def build_pipeline(cfg: "ExperimentConfig") -> "BaseComponent":  # noqa: PLR0915
             score.set_display_name(f"score:{model_name}")
             rows.append(score.outputs["Output"])
         if timesfm:
-            register = comps.register_timesfm(config_json=config_json)
+            # The prepped Dataset artifact is the lineage edge into the serving branch: the served
+            # TimesFM model reads its context from the prepped table at predict time.
+            register = comps.register_timesfm(
+                config_json=config_json, prepped=tables.outputs["prepped"]
+            )
             register.set_caching_options(caching)
             register.set_display_name("register-timesfm")
             if serving.mode == "endpoint":

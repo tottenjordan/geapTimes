@@ -1,6 +1,12 @@
 """Tests for deterministic table naming."""
 
-from geaptimes.naming import config_fingerprint, config_slug, data_slug, table_names
+from geaptimes.naming import (
+    config_fingerprint,
+    config_fingerprint_hash,
+    config_slug,
+    data_slug,
+    table_names,
+)
 from geaptimes.schemas import ExperimentConfig
 
 BASE = {
@@ -38,3 +44,10 @@ def test_fingerprint_is_stable_and_includes_experiment() -> None:
     fp2 = config_fingerprint(_cfg())
     assert fp1 == fp2
     assert '"experiment":"exp"' in fp1
+
+
+def test_fingerprint_hash_is_short_stable_and_config_sensitive() -> None:
+    base = config_fingerprint_hash(_cfg())
+    assert len(base) == 12
+    assert base == config_fingerprint_hash(_cfg())  # stable
+    assert base != config_fingerprint_hash(_cfg(forecast={"horizon": 99}))  # config-sensitive

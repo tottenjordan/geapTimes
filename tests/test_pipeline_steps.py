@@ -48,9 +48,14 @@ def _frame(n_series: int = 2, days: int = 80) -> pd.DataFrame:
 # -- build_tables ---------------------------------------------------------------------------------
 def test_build_tables_step_runs_train_and_infer() -> None:
     seen: list[str] = []
-    names = steps.build_tables_step(_cfg(), query_runner=seen.append)
-    assert names["train"] == "p.ds.citibike_daily_train__top25_h3_t14_v14"
-    assert names["infer"] == "p.ds.citibike_daily_infer__top25_h3_t14_v14"
+    refs = steps.build_tables_step(
+        _cfg(), query_runner=seen.append, row_counter=lambda name: 7 if "train" in name else 3
+    )
+    assert refs["train"].name == "p.ds.citibike_daily_train__top25_h3_t14_v14"
+    assert refs["infer"].name == "p.ds.citibike_daily_infer__top25_h3_t14_v14"
+    assert refs["prepped"].name == "p.ds.citibike_daily_prepped__top25_h3_t14_v14"
+    assert refs["train"].rows == 7
+    assert refs["infer"].rows == 3
     assert len(seen) == 2
     assert "CREATE OR REPLACE TABLE" in seen[0]
     assert "splits != 'TEST'" in seen[0]

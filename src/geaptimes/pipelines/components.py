@@ -44,20 +44,39 @@ def build_components(image: str) -> PipelineComponents:  # noqa: PLR0915, C901 -
     """
 
     @dsl.component(base_image=image)
-    def build_tables(config_json: str) -> str:
+    def build_tables(
+        config_json: str,
+        prepped: dsl.Output[dsl.Dataset],
+        train: dsl.Output[dsl.Dataset],
+        infer: dsl.Output[dsl.Dataset],
+    ) -> None:
+        from geaptimes.naming import config_fingerprint_hash
         from geaptimes.pipelines import steps
         from geaptimes.schemas import ExperimentConfig
 
         cfg = ExperimentConfig.model_validate_json(config_json)
-        names = steps.build_tables_step(cfg)
-        return names["infer"]
+        refs = steps.build_tables_step(cfg)
+        fingerprint = config_fingerprint_hash(cfg)
+        # Emit one lineage Dataset artifact per table: a BigQuery *reference* (bq:// uri +
+        # fingerprint + rows), not the data itself. Wiring these into the backends + serving steps
+        # gives ML-Metadata a real data->model->prediction lineage chain.
+        for role, artifact in (("prepped", prepped), ("train", train), ("infer", infer)):
+            ref = refs[role]
+            artifact.uri = f"bq://{ref.name}"
+            artifact.metadata["table"] = ref.name
+            artifact.metadata["rows"] = ref.rows
+            artifact.metadata["fingerprint"] = fingerprint
 
     @dsl.component(base_image=image)
-    def train_backend(config_json: str, model_name: str, tables: str) -> str:
+    def train_backend(
+        config_json: str,
+        model_name: str,
+        train: dsl.Input[dsl.Dataset],
+    ) -> str:
         from geaptimes.pipelines import steps
         from geaptimes.schemas import ExperimentConfig
 
-        _ = tables  # ordering dependency on build_tables; the table names come from config
+        _ = train  # lineage + ordering edge from build_tables; table names come from config
         cfg = ExperimentConfig.model_validate_json(config_json)
         return steps.train_backend_step(cfg, model_name)
 
@@ -66,11 +85,13 @@ def build_components(image: str) -> PipelineComponents:  # noqa: PLR0915, C901 -
         config_json: str,
         model_name: str,
         model_reference: str,
+        infer: dsl.Input[dsl.Dataset],
         predictions: dsl.Output[dsl.Dataset],
     ) -> None:
         from geaptimes.pipelines import steps
         from geaptimes.schemas import ExperimentConfig
 
+        _ = infer  # lineage + ordering edge from build_tables; table names come from config
         cfg = ExperimentConfig.model_validate_json(config_json)
         frame = steps.infer_backend_step(cfg, model_name, model_reference)
         frame.to_parquet(predictions.path, index=False)
@@ -108,10 +129,11 @@ def build_components(image: str) -> PipelineComponents:  # noqa: PLR0915, C901 -
         return base64.b64encode(payload.encode("utf-8")).decode("ascii")
 
     @dsl.component(base_image=image)
-    def register_timesfm(config_json: str) -> str:
+    def register_timesfm(config_json: str, prepped: dsl.Input[dsl.Dataset]) -> str:
         from geaptimes.pipelines import steps
         from geaptimes.schemas import ExperimentConfig
 
+        _ = prepped  # lineage edge: served model reads its context from the prepped table
         cfg = ExperimentConfig.model_validate_json(config_json)
         return steps.register_timesfm_step(cfg)
 

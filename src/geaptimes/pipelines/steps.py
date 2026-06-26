@@ -65,6 +65,14 @@ class BackendResult:
     predictions: "pd.DataFrame"
 
 
+@dataclass(frozen=True)
+class TableRef:
+    """A BigQuery table's fully-qualified name + row count, for lineage Dataset artifacts."""
+
+    name: str
+    rows: int
+
+
 # -- helpers --------------------------------------------------------------------------------------
 def _qualified(cfg: "ExperimentConfig", role: str) -> str:
     """Fully-qualified ``project.dataset.table`` for a naming role."""
@@ -172,9 +180,16 @@ def build_tables_step(
     cfg: "ExperimentConfig",
     *,
     query_runner: "Callable[[str], Any] | None" = None,
-) -> dict[str, str]:
-    """Build the train + infer tables from the prepped table; return the resolved table names."""
+    row_counter: "Callable[[str], int] | None" = None,
+) -> dict[str, TableRef]:
+    """Build the train + infer tables from the prepped table; return resolved table refs.
+
+    Each :class:`TableRef` carries the fully-qualified name + row count so the ``build_tables``
+    component can emit a lineage ``Dataset`` artifact per table (``bq://`` uri + fingerprint +
+    rows), giving every downstream backend (TimesFM serving included) a real data lineage edge.
+    """
     run = query_runner or (lambda sql: _run_bq(cfg, sql))
+    count = row_counter or (lambda name: _count_rows(cfg, name))
     prepped = _qualified(cfg, "prepped")
     train = _qualified(cfg, "train")
     infer = _qualified(cfg, "infer")
@@ -182,7 +197,11 @@ def build_tables_step(
     run(build_train_query(cfg.data, prepped, train))
     logger.info("building infer table %s", infer)
     run(build_infer_query(cfg.data, prepped, infer))
-    return {"prepped": prepped, "train": train, "infer": infer}
+    return {
+        "prepped": TableRef(prepped, count(prepped)),
+        "train": TableRef(train, count(train)),
+        "infer": TableRef(infer, count(infer)),
+    }
 
 
 def _run_bq(cfg: "ExperimentConfig", sql: str) -> Any:  # noqa: ANN401  # pragma: no cover - live
@@ -190,6 +209,14 @@ def _run_bq(cfg: "ExperimentConfig", sql: str) -> Any:  # noqa: ANN401  # pragma
     from google.cloud import bigquery  # noqa: PLC0415 - lazy cloud import
 
     return bigquery.Client(project=cfg.project.id).query(sql).result()
+
+
+def _count_rows(cfg: "ExperimentConfig", table: str) -> int:  # pragma: no cover - live
+    """Row count for a fully-qualified table (default ``row_counter`` for build_tables_step)."""
+    from google.cloud import bigquery  # noqa: PLC0415 - lazy cloud import
+
+    sql = f"SELECT COUNT(*) AS n FROM `{table}`"  # noqa: S608 - trusted config identifiers
+    return int(next(iter(bigquery.Client(project=cfg.project.id).query(sql).result())).n)
 
 
 def train_backend_step(

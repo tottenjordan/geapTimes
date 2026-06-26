@@ -133,6 +133,35 @@ def test_batch_mode_display_name(tmp_path: Path) -> None:
     assert "timesfm:endpoint-predict" not in names
 
 
+def _tasks_by_name(cfg: ExperimentConfig, tmp_path: Path) -> dict[str, dict]:
+    """Every task across the root + nested (ExitHandler) DAGs, keyed by task name."""
+    out = compile_pipeline(cfg, tmp_path / "pipeline.yaml")
+    spec = yaml.safe_load(Path(out).read_text(encoding="utf-8"))
+    tasks: dict[str, dict] = dict(spec["root"]["dag"]["tasks"])
+    for comp in spec.get("components", {}).values():
+        if "dag" in comp:
+            tasks.update(comp["dag"]["tasks"])
+    return tasks
+
+
+def test_table_artifacts_wire_data_lineage_into_every_backend(tmp_path: Path) -> None:
+    """build_tables' table Dataset artifacts feed train/infer AND the TimesFM serving branch.
+
+    This is the data->serving lineage edge: register-timesfm consuming ``prepped`` is what closes
+    the previously edge-less serving branch (it used to depend on nothing).
+    """
+    tasks = _tasks_by_name(_cfg(ALL_THREE), tmp_path)
+
+    def artifact_source(task: str, key: str) -> str:
+        src = tasks[task]["inputs"]["artifacts"][key]["taskOutputArtifact"]
+        return f"{src['producerTask']}.{src['outputArtifactKey']}"
+
+    assert artifact_source("train-backend", "train") == "build-tables.train"
+    assert artifact_source("infer-backend", "infer") == "build-tables.infer"
+    assert artifact_source("register-timesfm", "prepped") == "build-tables.prepped"
+    assert "build-tables" in tasks["register-timesfm"]["dependentTasks"]
+
+
 def test_pipeline_name_and_config_param(tmp_path: Path) -> None:
     out = compile_pipeline(_cfg(ALL_THREE), tmp_path / "p.yaml")
     spec = yaml.safe_load(Path(out).read_text(encoding="utf-8"))

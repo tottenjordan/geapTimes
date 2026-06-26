@@ -73,9 +73,34 @@ def _backend_result(model: str) -> BackendResult:
     return BackendResult(record=record, predictions=_predictions())
 
 
+class _FakeDatasetArtifact:
+    def __init__(self, path: str = "") -> None:
+        self.path = path
+        self.uri = ""
+        self.metadata: dict[str, Any] = {}
+
+
 def test_build_tables_component(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(steps, "build_tables_step", lambda _cfg: {"infer": "p.ds.infer__x"})
-    assert COMPS.build_tables.python_func(config_json=CFG_JSON) == "p.ds.infer__x"
+    monkeypatch.setattr(
+        steps,
+        "build_tables_step",
+        lambda _cfg: {
+            "prepped": steps.TableRef("p.ds.prepped__x", 100),
+            "train": steps.TableRef("p.ds.train__x", 80),
+            "infer": steps.TableRef("p.ds.infer__x", 20),
+        },
+    )
+    prepped, train, infer = _FakeDatasetArtifact(), _FakeDatasetArtifact(), _FakeDatasetArtifact()
+    out = COMPS.build_tables.python_func(
+        config_json=CFG_JSON, prepped=prepped, train=train, infer=infer
+    )
+    assert out is None  # build_tables now emits artifacts, no return value
+    assert infer.uri == "bq://p.ds.infer__x"
+    assert train.metadata["rows"] == 80
+    assert prepped.metadata["table"] == "p.ds.prepped__x"
+    # Every table artifact carries the same config fingerprint (a non-empty hash).
+    assert prepped.metadata["fingerprint"] == infer.metadata["fingerprint"]
+    assert prepped.metadata["fingerprint"]
 
 
 def test_train_backend_component(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -87,7 +112,7 @@ def test_train_backend_component(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(steps, "train_backend_step", fake_train)
     out = COMPS.train_backend.python_func(
-        config_json=CFG_JSON, model_name="bqml_arima_xreg", tables="t"
+        config_json=CFG_JSON, model_name="bqml_arima_xreg", train=_FakeDatasetArtifact()
     )
     assert out == "ref-bqml_arima_xreg"
     assert seen["model_name"] == "bqml_arima_xreg"
@@ -107,6 +132,7 @@ def test_infer_backend_component(monkeypatch: pytest.MonkeyPatch, tmp_path: Path
         config_json=CFG_JSON,
         model_name="bqml_arima_xreg",
         model_reference="ref-bqml_arima_xreg",
+        infer=_FakeDatasetArtifact(),
         predictions=art,
     )
     assert out is None  # infer writes the predictions artifact; scoring happens downstream
@@ -148,7 +174,10 @@ def test_score_and_track_component(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
 def test_register_and_deploy_components(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(steps, "register_timesfm_step", lambda _cfg: "projects/x/models/m")
     monkeypatch.setattr(steps, "deploy_endpoint_step", lambda _cfg, name: f"ep-for-{name}")
-    assert COMPS.register_timesfm.python_func(config_json=CFG_JSON) == "projects/x/models/m"
+    registered = COMPS.register_timesfm.python_func(
+        config_json=CFG_JSON, prepped=_FakeDatasetArtifact()
+    )
+    assert registered == "projects/x/models/m"
     deployed = COMPS.deploy_endpoint.python_func(config_json=CFG_JSON, model_resource_name="m")
     assert deployed == "ep-for-m"
 

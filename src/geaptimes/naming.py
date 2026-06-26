@@ -11,6 +11,7 @@ distinct ``execution.experiment_name`` and rely on the table description (see
 :func:`config_fingerprint`) for full traceability.
 """
 
+import hashlib
 import json
 
 from geaptimes.schemas import DataConfig, ExperimentConfig, ForecastSettings
@@ -51,3 +52,9 @@ def config_fingerprint(cfg: ExperimentConfig) -> str:
         "forecast": cfg.forecast.model_dump(),
     }
     return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+
+def config_fingerprint_hash(cfg: ExperimentConfig, *, length: int = 12) -> str:
+    """Short, stable hash of :func:`config_fingerprint` for artifact metadata + freshness guards."""
+    digest = hashlib.sha256(config_fingerprint(cfg).encode("utf-8")).hexdigest()
+    return digest[:length]

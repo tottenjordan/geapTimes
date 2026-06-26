@@ -257,13 +257,21 @@ quotes). Fix: `score_and_track` returns **base64(JSON)**, `compare_backends` dec
 asserts the output stays in the base64 alphabet so a regression fails offline, not in a live run.
 Idiomatic artifact-based fan-in (replacing the base64 hop) is a Phase 2 cleanup candidate.
 
-### Phase 2 — Hybrid GCPC serving + data prep + artifacts (outline)
+### Phase 2 — Hybrid GCPC serving + data prep + artifacts — ACTIVE
 
-Folds in surviving 4A items (4A.1–4A.5, 4A.8). Hybrid GCPC for the TimesFM serving lifecycle only
-(`uv add google-cloud-pipeline-components`, pin-verify vs aiplatform 1.158.0 / kfp 2.16.x); AutoML +
-BQML stay custom SDK-wrappers (`AutoMLForecastingTrainingJobRunOp` out of scope). Self-bootstrapping
-data prep, richer artifacts, force_rebuild, machine right-size, docs → **one full AutoML run** =
-redesign acceptance + first live validation of the `e8a0f5f` read fix → STOP.
+Folds in surviving 4A items. Ordered by user priority (lineage first) + dependency. GCPC pin verified
+2026-06-26: `google-cloud-pipeline-components==2.22.0` declares `kfp<3,>=2.6.0` + `aiplatform<2,>=1.14.0`
+→ our kfp 2.16.1 / aiplatform 1.158.0 both satisfy (real resolver dry-run still required before adding).
+
+| # | Item | Status | Commit |
+|---|------|--------|--------|
+| P2.1 | **Data→serving lineage (4A.2+4A.3):** `build_tables` emits table-ref `Dataset` artifacts (`bq://` + config fingerprint + rows); wire into train/infer **and** TimesFM serving steps (closes edge-less serving branch) | done | 4ba6af2 |
+| P2.2 | Self-bootstrapping data prep (4A.1): `ensure_source`/`ensure_prepped` front steps, existence + fingerprint guard | pending | |
+| P2.3 | Hybrid GCPC serving (4A.6): `gcpc==2.22.0` after resolver dry-run; ModelUpload/EndpointCreate/ModelDeploy/Undeploy/EndpointDelete; AutoML+BQML stay custom | pending | |
+| P2.4 | Richer artifacts (4A.4): `Output[Metrics]` on score, `Output[Markdown]` ranking on compare; *candidate:* replace base64 fan-in with artifact fan-in | pending | |
+| P2.5 | force_rebuild (4A.5) + machine right-size (4A.8, e2-standard-4→e2-standard-2) | pending | |
+| P2.6 | Docs: hybrid-GCPC decision in CODE_STANDARDS + CLAUDE | pending | |
+| P2.7 | **One full AutoML run** = redesign acceptance + first live validation of `e8a0f5f` read fix + train/infer cache-reuse → STOP | pending | |
 
 ---
 
