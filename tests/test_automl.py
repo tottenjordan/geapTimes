@@ -79,13 +79,15 @@ def test_run_kwargs_maps_column_roles_and_settings() -> None:
     assert kw["time_series_identifier_column"] == "start_station_name"
     assert kw["time_series_attribute_columns"] == ATTR
     assert kw["available_at_forecast_columns"] == AVAIL
-    assert kw["unavailable_at_forecast_columns"] == UNAVAIL
+    # Vertex requires the target column itself in the unavailable-at-forecast set.
+    assert kw["unavailable_at_forecast_columns"] == [*UNAVAIL, "num_trips"]
     assert kw["forecast_horizon"] == 14
     assert kw["context_window"] == 28
     assert kw["budget_milli_node_hours"] == 1000
     assert kw["data_granularity_unit"] == "day"
     assert kw["data_granularity_count"] == 1
-    assert kw["predefined_split_column_name"] == "splits"
+    # No predefined split: Vertex auto-splits the TEST-free train table chronologically.
+    assert "predefined_split_column_name" not in kw
     assert kw["quantiles"] == QUANTILES
     assert kw["holiday_regions"] == ["US"]
     assert kw["model_labels"] == {"solution": "geaptimes"}

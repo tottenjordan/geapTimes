@@ -2,8 +2,9 @@
 
 The substantive job of this wrapper is translating the typed config into the
 ``AutoMLForecastingTrainingJob`` SDK surface: the covariate **column roles** (attribute /
-available-at-forecast / unavailable-at-forecast), the forecast horizon and context window, the
-daily granularity, the ``splits`` predefined-split column, the standardized
+available-at-forecast / unavailable-at-forecast, with the target itself marked unavailable as Vertex
+requires), the forecast horizon and context window, the daily granularity, Vertex's default
+chronological split over the TEST-free train table, the standardized
 :data:`~geaptimes.models.base.QUANTILES`, holiday regions, and the ``solution=geaptimes`` labels.
 
 Training and batch prediction run on Vertex (long-running, billable), so ``aiplatform`` is an
@@ -41,7 +42,6 @@ logger = get_logger(__name__)
 
 _GRANULARITY_UNIT = "day"
 _GRANULARITY_COUNT = 1
-_SPLIT_COLUMN = "splits"
 # Column emitted by Vertex batch prediction holding the point forecast (flattened by the reader).
 _PREDICTED_VALUE_COLUMN = "value"
 # Vertex forecasting batch output nests results in a STRUCT column named predicted_<target> with
@@ -99,19 +99,28 @@ class AutoMLForecaster(Forecaster):
         """``.run()`` kwargs: column roles, horizon/context, granularity, split, quantiles."""
         data = self.cfg.data
         covariates = data.covariates
+        # Vertex AutoML requires the target column itself to be declared unavailable-at-forecast
+        # (its future value is unknown at prediction time); add it if not already listed.
+        unavailable = list(covariates.unavailable_at_forecast_columns)
+        if data.target_column not in unavailable:
+            unavailable.append(data.target_column)
         return {
             "target_column": data.target_column,
             "time_column": data.time_column,
             "time_series_identifier_column": data.series_column,
             "time_series_attribute_columns": list(covariates.time_series_attribute_columns),
             "available_at_forecast_columns": list(covariates.available_at_forecast_columns),
-            "unavailable_at_forecast_columns": list(covariates.unavailable_at_forecast_columns),
+            "unavailable_at_forecast_columns": unavailable,
             "forecast_horizon": self.cfg.forecast.horizon,
             "context_window": self.params.context_window,
             "budget_milli_node_hours": self.params.budget_milli_node_hours,
             "data_granularity_unit": _GRANULARITY_UNIT,
             "data_granularity_count": _GRANULARITY_COUNT,
-            "predefined_split_column_name": _SPLIT_COLUMN,
+            # No predefined split: the training dataset is the TEST-free train table, so Vertex's
+            # default chronological auto-split is used for AutoML's internal validation. (A
+            # predefined `splits` column can't be used here: Vertex requires the values
+            # TRAIN/VALIDATION/TEST, but the train table has no TEST rows by design.) The backtest
+            # stays honest -- AutoML never sees the TEST window, which we score via batch predict.
             "quantiles": list(QUANTILES),
             "holiday_regions": self._holiday_regions(),
             "model_display_name": self.display_name,
