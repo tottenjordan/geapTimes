@@ -53,7 +53,7 @@ evaluation (MAPE, quantile loss, comparison report) is deferred to Stage 5.
 | 3.6 | `models/automl.py` — wire `budget_milli_node_hours` into `run_kwargs` | done | `14b22d4` |
 | 3.x | `models/bqml.py` — fix: label model via BigQuery API (CREATE MODEL rejects label OPTIONS) | done | `6f3eef7` |
 | 3.7 | Demo — `03_experiment_tracking.ipynb` | done | `42f8078` |
-| 3.8 | Live run on `hybrid-vertex` (TimesFM + BQML) + notes | done | `8d29e19` |
+| 3.8 | Live run on `hybrid-vertex` (TimesFM + BQML) + notes | done | `92b6ac1` |
 
 ### 3.1 Schema + config
 `DOEConfig(axes: dict[str, list])` + `ExperimentConfig.doe`; `AutoMLParams.budget_milli_node_hours`
