@@ -21,6 +21,11 @@ geapTimes is a config-driven time-series forecasting framework (NYC Citibike dem
 Gemini Enterprise Agent Platform (Vertex AI). Forecasting logic is accessed via a model
 factory; experiments are defined in YAML and validated into typed config.
 
+The comparison pipeline runs each backend as **train → infer → score** feeding one shared
+scorer, and serves TimesFM via a **hybrid** of Google Cloud Pipeline Components (managed serving
+infra) and custom components (all logic + tracking). When adding a pipeline node, follow the
+GCPC-vs-custom split in [CODE_STANDARDS.md](./CODE_STANDARDS.md#pipeline-components--gcpc-vs-custom-hybrid-serving).
+
 ## Planning & progress
 
 - **[PLANS.md](./PLANS.md)** is the living tracker: a coarse master roadmap plus the active

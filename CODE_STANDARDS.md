@@ -57,6 +57,44 @@ submit + pod startup (~5 min per iteration). Catch those failures cheaply instea
       --config config/comparison_config.yaml --disable-automl
   ```
 
+## Pipeline components — GCPC vs custom (hybrid serving)
+
+The comparison pipeline is **hybrid**: it mixes Google Cloud Pipeline Components (GCPC) with our own
+custom `@dsl.component` shells, by a deliberate split. Follow this rule when adding pipeline nodes.
+
+- **Use GCPC ops only for opaque, managed-resource *infrastructure*** — specifically the TimesFM
+  serving lifecycle: `importer` (UnmanagedContainerModel) → `ModelUploadOp` → `EndpointCreateOp` +
+  `ModelDeployOp` (`pipelines/pipeline.py`). These earn their keep by emitting standardized
+  `google.Vertex*` artifacts (`VertexModel`/`VertexEndpoint`) with ML-Metadata **lineage** and
+  billing-label propagation, and by removing infra code we'd otherwise hand-roll. They run in
+  Google-managed images, so adopting them needs **no runtime-image rebuild** — `google-cloud-pipeline-
+  components` is a **compile-time-only** dependency (pinned `==2.22.0`; declares `kfp<3,>=2.6.0` +
+  `aiplatform<2,>=1.14.0`, satisfied by our locked kfp 2.16.1 / aiplatform 1.158.0 — kfp itself is
+  constrained `>=2,<3` in `pyproject.toml`, not hard-pinned). GCPC ops are opaque, so
+  test their **DAG wiring via the compile test**, never their internals.
+- **Keep custom `@dsl.component` shells for everything with real logic** — anything that carries
+  injected-seam offline tests, `ExperimentTracker` integration, or our standardized frame mapping:
+  data prep (`ensure_source`/`ensure_prepped`), `build_tables`, `train_backend`/`infer_backend`, the
+  shared `score_and_track`, `compare_backends`, and the served paths `endpoint_predict` /
+  `batch_predict`. **AutoML and BQML stay fully custom SDK-wrappers** — the heavyweight AutoML tabular
+  workflow and `AutoMLForecastingTrainingJobRunOp` are out of scope (they'd fragment our column-spec +
+  flatten + score + track logic, and our `--preflight-automl` already de-risks the raw SDK call).
+
+**Three deviations from a pure-GCPC serving lifecycle (intentional, do not "fix"):**
+
+1. **Teardown stays custom** (`teardown_serving`, display-name based). `ModelUndeployOp` /
+   `EndpointDeleteOp` need the in-handler model/endpoint artifacts, which a `dsl.ExitHandler` exit
+   task **cannot** consume. The custom teardown resolves the endpoint by display name, so it also runs
+   on partial failure — the stranded-endpoint guard. (Always-on-exit is safe: it's idempotent / a
+   no-op when nothing is deployed.)
+2. **`endpoint_predict` stays custom** — online predict + our frame mapping. It consumes the
+   `VertexEndpoint` artifact's `resourceName` and is ordered `.after(deploy)`.
+3. **Custom component pods are right-sized, GCPC ops are not.** KFP lightweight components expose no
+   machine-type setter, so `pipeline._size` applies `set_cpu_limit`/`set_memory_limit` (mapped from
+   `component_machine_type` by `config.component_resources`) to the **custom** pods only; on Vertex
+   Pipelines those limits select the closest-match machine. GCPC ops run in Google-managed images and
+   are deliberately **left unsized**.
+
 ## Source layout
 
 - `src/` layout: the importable package is `src/geaptimes/`. Import as `from geaptimes... import ...`.
