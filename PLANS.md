@@ -272,7 +272,7 @@ Folds in surviving 4A items. Ordered by user priority (lineage first) + dependen
 | P2.5 | force_rebuild (4A.5) + machine right-size (4A.8, e2-standard-4→e2-standard-2) | done | ea9cad4 |
 | P2.6 | Docs: hybrid-GCPC decision in CODE_STANDARDS + CLAUDE | done | 8374006 |
 | P2.7a | **Cheap `--disable-automl` live run** — first live validation of P2.3 GCPC serving + P2.1/P2.2 data-prep+lineage + P2.4 artifacts + P2.5 sizing (BQML+TimesFM only) | done | c03b9ff, bf873d2, 9e8e581 |
-| P2.7b | **One full AutoML run** = redesign acceptance + first live validation of `e8a0f5f` read fix + train/infer cache-reuse → Phase 2 STOP | done | PLACEHOLDER_P27B_HASH |
+| P2.7b | **One full AutoML run** = redesign acceptance + first live validation of `e8a0f5f` read fix + train/infer cache-reuse → Phase 2 STOP | done | 0df799c |
 
 **P2.3 design notes (full-hybrid, approved 2026-06-26):** resolver dry-run clean (gcpc 2.22.0 adds only
 itself; kfp 2.16.1 / aiplatform 1.158.0 satisfy). GCPC ops run in Google-managed images → no runtime
