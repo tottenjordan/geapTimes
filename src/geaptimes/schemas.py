@@ -101,6 +101,10 @@ class DataConfig(_Base):
     station_filter: StationFilter = Field(default_factory=StationFilter)
     date_range: DateRange = Field(default_factory=DateRange)
     gap_fill: bool = True
+    # Bypass the ensure_source/ensure_prepped existence + fingerprint guard and rebuild the source
+    # and prepped tables unconditionally (e.g. the upstream public data changed but the config --
+    # hence the fingerprint -- did not). Exposed on submit as ``--force-data-rebuild``.
+    force_rebuild: bool = False
     weather: WeatherConfig = Field(default_factory=WeatherConfig)
     splits: SplitConfig = Field(default_factory=SplitConfig)
     covariates: CovariateRoles = Field(default_factory=CovariateRoles)
@@ -153,7 +157,9 @@ class AutoMLParams(_Base):
     """Vertex AI / GEAP AutoML forecasting params."""
 
     type: Literal["automl"]
-    optimization_objective: str = "minimize-rmse"
+    # The framework always emits quantile forecasts (q10..q90), and Vertex requires
+    # "minimize-quantile-loss" whenever quantiles are requested -- any other objective is rejected.
+    optimization_objective: str = "minimize-quantile-loss"
     context_window: int = 28
     # Training budget in milli-node-hours (1000 = 1 node-hour). Bounds AutoML's billable spend;
     # the wrapper is gated by default (model disabled) and only runs when explicitly enabled.
@@ -201,6 +207,84 @@ class DOEConfig(_Base):
     axes: dict[str, list[Any]] = Field(default_factory=dict)
 
 
+class ArtifactRegistryConfig(_Base):
+    """Artifact Registry coordinates for the geapTimes runtime container image.
+
+    The image serves double duty: the TimesFM custom serving container and the base image for the
+    KFP pipeline components. ``location`` defaults to ``project.region`` when unset.
+    """
+
+    repo: str = "geaptimes"
+    image_name: str = "geaptimes-runtime"
+    image_tag: str = "latest"
+    location: str | None = None
+
+    def image_uri(self, *, project_id: str, region: str) -> str:
+        """Resolve the fully-qualified Artifact Registry image URI."""
+        location = self.location or region
+        return (
+            f"{location}-docker.pkg.dev/{project_id}/{self.repo}/{self.image_name}:{self.image_tag}"
+        )
+
+
+class ServingConfig(_Base):
+    """How the custom-container TimesFM model is served in the pipeline.
+
+    ``mode`` selects an online endpoint (default) or a batch-prediction job. ``keep_deployed``
+    is the cost switch: ``False`` (default) tears the endpoint down after artifacts are saved;
+    ``True`` leaves it running.
+    """
+
+    mode: Literal["endpoint", "batch"] = "endpoint"
+    keep_deployed: bool = False
+    machine_type: str = "n1-standard-4"
+    min_replica_count: int = 1
+    max_replica_count: int = 1
+    batch_machine_type: str = "n1-standard-4"
+    batch_starting_replica_count: int = 1
+    batch_max_replica_count: int = 1
+
+    @field_validator(
+        "min_replica_count",
+        "max_replica_count",
+        "batch_starting_replica_count",
+        "batch_max_replica_count",
+    )
+    @classmethod
+    def _positive(cls, v: int) -> int:
+        if v <= 0:
+            msg = "serving replica counts must be > 0"
+            raise ValueError(msg)
+        return v
+
+
+class PipelineConfig(_Base):
+    """Vertex AI managed-pipeline (KFP) settings for cloud orchestration."""
+
+    pipeline_root: str | None = None
+    image: ArtifactRegistryConfig = Field(default_factory=ArtifactRegistryConfig)
+    serving: ServingConfig = Field(default_factory=ServingConfig)
+    # Executor machine for the custom component pods. These are supervisors -- they issue BigQuery
+    # / Vertex API calls and wait, not heavy compute -- so the smaller e2-standard-2 is right-sized
+    # (translated to CPU/memory limits in geaptimes.pipelines.config.component_resources).
+    component_machine_type: str = "e2-standard-2"
+    # Whether deterministic *producers* (data-prep, build-tables, train/infer, model-upload, ...)
+    # reuse cached results across runs. Applied at compile time as an explicit
+    # ``set_caching_options(True)`` per producer task, which survives KFP->Vertex serialization. The
+    # ephemeral serving lifecycle (create/deploy/predict/teardown) is never cached regardless. Note
+    # the Vertex *pipeline-level* enable_caching is always submitted False (see submit_pipeline): a
+    # task's ``set_caching_options(False)`` serializes to an empty cachingOptions, so it must fall
+    # back to an off pipeline default -- otherwise a cached endpoint-create would hand back a
+    # torn-down endpoint. So this flag only turns producer caching *off*, never the lifecycle on.
+    enable_caching: bool = True
+
+    def resolved_pipeline_root(self, *, gcs_bucket: str, experiment_name: str) -> str:
+        """Resolve the pipeline root, defaulting to a per-experiment path in the GCS bucket."""
+        if self.pipeline_root:
+            return self.pipeline_root
+        return f"gs://{gcs_bucket}/pipeline_root/{experiment_name}"
+
+
 class ExperimentConfig(_Base):
     """Root experiment config — the typed contract consumed across geapTimes."""
 
@@ -210,6 +294,7 @@ class ExperimentConfig(_Base):
     models: list[ModelConfig]
     execution: ExecutionConfig
     doe: DOEConfig = Field(default_factory=DOEConfig)
+    pipeline: PipelineConfig = Field(default_factory=PipelineConfig)
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> "ExperimentConfig":

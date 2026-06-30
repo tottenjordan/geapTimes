@@ -17,8 +17,8 @@ Status legend: `pending` · `in progress` · `done` · `blocked`
 |-------|-------|--------|
 | 1 | Data Architecture & Config Schema | done |
 | 2 | Model Factory & Forecaster Abstractions | done |
-| 3 | Experiment Tracking & DOE Framework | items done — STOP (awaiting approval) |
-| 4 | Managed Pipelines & Cloud Orchestration | pending |
+| 3 | Experiment Tracking & DOE Framework | done |
+| 4 | Managed Pipelines & Cloud Orchestration | in progress |
 | 5 | Standardized Evaluation & Entry Point | pending |
 
 **Stage 2** — `src/geaptimes/models/`: `base.py` (ABC), `factory.py`, `automl.py`,
@@ -32,7 +32,346 @@ container (Model Garden → endpoint); side-by-side comparison DAG.
 
 ---
 
-## Tier 2 — Stage 3 (Experiment Tracking & DOE Framework) — ACTIVE
+## Tier 2 — Stage 4 (Managed Pipelines & Cloud Orchestration) — ACTIVE
+
+The Stage 3 in-process `run_experiment` loop is lifted into a managed **KFP v2 pipeline** on Vertex
+AI, and a custom-container **TimesFM** model is served via an online **endpoint** (default) or
+**batch** prediction (selectable via `pipeline.serving.mode`; teardown is the `keep_deployed`
+switch, default transient). The deliverable is a **side-by-side comparison DAG** running all three
+backends (TimesFM + BQML + AutoML at the floor budget) on identical backtests, emitting a comparison
+artifact + winner and one Vertex `ExperimentRun` per model under `citibike-daily-baseline`. One
+`geaptimes` runtime image (Artifact Registry, built via Cloud Build) serves double duty as the
+TimesFM serving container and the KFP component base image. Every cloud seam is injected so logic
+unit-tests offline (incl. a pipeline-compile graph test); the live `PipelineJob` — which incurs one
+budgeted AutoML run + a transient endpoint deploy — is a separate, explicit step. Full standardized
+evaluation + the polished CLI remain in Stage 5.
+
+| # | Item | Status | Commit |
+|---|------|--------|--------|
+| 4.1 | `schemas.py` + `base_config.yaml` + `comparison_config.yaml` — `pipeline:` block (serving mode/teardown, AR image, pipeline_root) | done | `d8ec2ae` |
+| 4.2 | `models/timesfm_core.py` — factor TimesFM core (`compile_timesfm`/`forecast_arrays`/`rows_from_forecast`); refactor `timesfm.py` | done | `c43836e` |
+| 4.3 | `pipelines/serving/{predictor,app}.py` — TimesFM serving predictor + Vertex-contract web app | done | `78ca456` |
+| 4.4 | `models/automl.py` — finish predict path (`_read_predictions` output read + `_flatten_automl_output`) | done | `5f0323b` |
+| 4.5 | `pipelines/{config,steps}.py` — pure pipeline helpers + injected-seam step functions | done | `a429bdb` |
+| 4.6 | `pipelines/{components,pipeline,compile}.py` — KFP components + comparison DAG + compile; add `kfp` | done | `82cafda` |
+| 4.7 | `pipelines/container/{Dockerfile,cloudbuild.yaml}` + `setup_gcp.py` AR repo + `requirements.txt` | done | `2802b12` |
+| 4.8 | `pipelines/submit.py` — submit `PipelineJob` + `--enable-automl` override | done | `a8303ff` |
+| 4.9 | Live comparison run on `hybrid-vertex` (TimesFM + BQML + AutoML floor) + notes | pending | — |
+
+### 4.1 Schema + config
+`ArtifactRegistryConfig` + `ServingConfig` (`mode: endpoint\|batch`, `keep_deployed`, machine/replica
+knobs) + `PipelineConfig` (`pipeline_root`, `image`, `serving`, `component_machine_type`,
+`enable_caching`); `ExperimentConfig.pipeline`. `base_config.yaml` gets a `pipeline:` block (AutoML
+stays disabled); new `comparison_config.yaml` enables all three at floor budget under
+`citibike-daily-baseline` / `target: cloud_pipeline`.
+
+### 4.2 Factor TimesFM core
+Behavior-preserving extraction of compile + `model.forecast` + tensor→`PREDICTION_COLUMNS` mapping
+into `models/timesfm_core.py`, reused by `TimesFMForecaster.predict()` and the serving predictor.
+
+### 4.3 Serving predictor + app
+`TimesFMPredictor` (load+compile once; `predict(instances)→responses` via the core) + a Vertex
+custom-container web app (`/health`, `/predict`, `AIP_*` env). Offline-tested with a fake model +
+test client (no torch, no server).
+
+### 4.4 AutoML predict path
+Implement the batch-prediction output-table read + nested-struct flatten
+(`predicted_<target>.{value,quantile_values,quantile_predictions}` → `PREDICTION_COLUMNS`), keeping
+the injected `prediction_reader` seam. Live field names confirmed in 4.9.
+
+### 4.5 Pipeline helpers + steps
+`config.py` pure derivations (image URI, pipeline_root, display names); `steps.py` plain step
+functions (build tables, per-backend run via `ForecastFactory`+`point_metrics`+`ExperimentTracker`,
+register/deploy/undeploy/endpoint-predict/batch-predict, compare→winner) with injected seams.
+
+### 4.6 KFP components + DAG + compile
+`@dsl.component` shells over the steps (cfg reconstructed from a JSON param); `@dsl.pipeline`
+assembling build_tables → {bqml, automl in-process; timesfm served (endpoint|batch)} → compare;
+`compile_pipeline()` (pure). Compile-to-YAML graph test (4 configs). Adds `kfp==2.16.1`.
+
+**Refinements vs the approved plan (sound engineering calls, recorded):**
+- *Branch at compile time, not via `dsl.Condition`.* Which backends run, the serving `mode`, and
+  whether to tear down are read from the typed config when `build_pipeline(cfg)` runs — we compile
+  per submit, so the cfg is known and the YAML shows exactly what executes (and is graph-testable).
+  The rich config still travels to component bodies as a runtime `config_json` param.
+- *`dsl.ExitHandler` wraps the **whole** body* (teardown as the exit task), not just serve+teardown:
+  KFP forbids a task outside a handler depending on one inside it, so `compare` (which needs the
+  served-TimesFM metrics) must sit inside the handler too. Teardown is config/display-name based and
+  idempotent (no-op when nothing is deployed), so always-on-exit is safe.
+- *steps.py additions* (same injected-seam discipline): `deploy_endpoint_step` now creates a
+  named+labelled endpoint so teardown can resolve it by display name; `teardown_endpoint_step`
+  (name-based) → `teardown_serving_step` (config-based, for the ExitHandler); new
+  `score_and_track_step` gives the served path the same metrics/`ExperimentRun`/artifacts as
+  in-process backends without an in-process `Forecaster`.
+
+### 4.7 Container + Cloud Build
+One `geaptimes` runtime image (baked TimesFM checkpoint, serving CMD) + `cloudbuild.yaml` (push to
+labelled AR repo); regen `requirements.txt`; `setup_gcp.py` ensures the AR repo. **Offline files
+done** (`2802b12`); the live `gcloud builds submit` (image build + digest record) runs in 4.9.
+
+**Build-dependency decision (recorded):** the image installs **CPU-only torch** from the PyTorch CPU
+index, then the project from **public PyPI** — deliberately *not* `uv.lock`, which pins a CUDA torch
+(86 nvidia-* pkgs, ~6 GB) from an internal mirror (`artifact-foundry-prod`) that Cloud Build workers
+can't reach. `timesfm[torch]` only needs `torch>=2.0.0`, so CPU satisfies it. AR repo provisioning
+shells out to `gcloud` (injectable runner) rather than adding an admin SDK dep to the runtime image.
+
+### 4.8 Submit + AutoML-enable override
+`submit_pipeline(cfg, *, aiplatform)` compiles + submits a `PipelineJob` under the experiment;
+`--enable-automl` flips AutoML on via a `model_dump`→patch→`model_validate` override.
+
+### 4.9 Live run + notes
+Cloud Build the image, submit the comparison `PipelineJob`; confirm success, three `ExperimentRun`s,
+transient endpoint teardown, floor-budget AutoML run, and comparison artifact + winner; record in
+`docs/notes/stage-4-managed-pipelines-live-run.md`.
+
+### Stage 4 verification
+- **Offline** (gating): `uv run ruff check .` → `uv run ruff format --check .` → `uv run ty check`
+  → `uv run pytest`; then `compile_pipeline()` emits the DAG YAML and `comparison_config.yaml`
+  validates — no cloud calls.
+- **Live** (manual, auth): Cloud Build the image, submit the comparison `PipelineJob`, confirm
+  success + teardown + AutoML floor run + comparison artifact, record in `docs/notes/`.
+- **STOP** checkpoint: present the config switches, the factored core + serving container, the
+  AutoML predict path, the KFP components + comparison DAG, the submit path, and the live results.
+
+### Stage 4 follow-up feedback (triaged 2026-06-26)
+
+Six pipeline-feedback points raised during the 4.9 live run, with disposition. None affect the
+in-flight run (improvements show up on the next deploy):
+
+| # | Feedback | Disposition |
+|---|----------|-------------|
+| 1 | Improve pipeline step names | **done now** — explicit `set_display_name` per task (`run-backend:<model>`, `build-tables`, …); compile test asserts them |
+| 2 | Make quantiles optional (force `minimize-quantile-loss` + adjust metrics only when enabled) | **deferred → Stage 5**, documented in `CODE_STANDARDS.md` (Deferred / backlog) |
+| 3 | Output artifacts for register-timesfm (model + markdown metadata summary) | **Stage 4 addendum** 4A.4/4A.6 (GCPC ops emit these natively) |
+| 4 | Output artifacts for build-tables / run-backend / compare / deploy-endpoint | **Stage 4 addendum** 4A.2/4A.4 |
+| 5 | Adopt Google Cloud Pipeline Components where beneficial (esp. serving lifecycle) | **Stage 4 addendum** 4A.6 — adopt GCPC for serving infra; keep custom components for logic+tracker steps; do **not** adopt the heavyweight AutoML tabular workflow |
+| — | Data-prep as first pipeline step (create source/prepped if absent; outputs as artifacts) | **Stage 4 addendum** 4A.1/4A.3 (existence+fingerprint guard; self-bootstrapping pipeline) |
+| 6 | Reuse an existing similar TimesFM deployment | **deferred → Stage 5** (coupled to warm/`keep_deployed` endpoints); design + LOE in `docs/notes/timesfm-endpoint-reuse-design.md` |
+
+Items #3/#4/#5 (plus the data-prep-step idea below) are coupled (GCPC serving ops deliver much of
+#3/#4's standardized artifacts + lineage for free) and are folded into the **Stage 4 addendum**
+below, decided at the STOP checkpoint, so they land in one combined re-run.
+
+### Stage 4 Addendum — Self-contained data prep, richer artifacts & GCPC (PROPOSED 2026-06-26)
+
+> **SUPERSEDED 2026-06-26 by the Stage 4 Redesign** (approved; snapshot
+> `docs/plans/005_stage-4-redesign-train-inference-split.md`). The first live run failed (AutoML read
+> bug, fixed `e8a0f5f`), exposing that `run_backend` welds fit+predict+score+track into one pod. The
+> redesign splits every backend into **train → infer → score** (trained model passed as an artifact;
+> failed infer re-uses the cached model) and rolls out **phased**: Phase 1 = the split (custom, no new
+> deps); Phase 2 = **hybrid** GCPC (serving lifecycle only) + the surviving 4A items (4A.1–4A.5, 4A.8).
+> The 4A.1–4A.8 items below are retained for reference but are now executed via the redesign phases.
+
+**Status: SUPERSEDED (see banner above).** Make the comparison pipeline
+**self-bootstrapping** (no out-of-band Stage 1 notebook prerequisite) and **lineage-rich**, and
+adopt **Google Cloud Pipeline Components (GCPC)** where they earn their keep. Folds feedback #3/#4/#5
+and the data-prep-as-first-step idea into one change set, verified in **one combined re-run**
+(iterate cheaply with `--disable-automl`; one full three-backend run to close). Archive an immutable
+snapshot to `docs/plans/005_*.md` on approval.
+
+Design principles (carried from Stage 4):
+- **Keep custom `@dsl.component` shells** for steps with real logic + injected-seam offline tests +
+  `ExperimentTracker` integration (data prep, build-tables, run-backend, served scoring, compare).
+- **Adopt GCPC only for opaque managed-resource infra** (serving lifecycle) where it adds
+  standardized `google.Vertex*` artifacts + ML-Metadata lineage + billing-label propagation and
+  removes code we'd otherwise hand-roll. GCPC ops are opaque → test DAG wiring via compile, not
+  internals.
+- **Table artifacts are *references***, not copied bytes: a `dsl.Dataset` (or `google.BQTable`) with
+  URI `bq://project.ds.table` and `.metadata` = {table id, `config_fingerprint`, row count}.
+
+| # | Item | Notes |
+|---|------|-------|
+| 4A.1 | `ensure_source` → `ensure_prepped` steps at the front of the DAG | existence + `config_fingerprint` guard (skip when present & current); `CREATE OR REPLACE` only when missing/stale; injected `table_exists`/`table_metadata` seams for offline tests |
+| 4A.2 | Table-reference artifacts | `ensure_source`/`ensure_prepped`/`build_tables` emit `Dataset` artifacts (`bq://…` + fingerprint + row count) — satisfies the data side of #4 |
+| 4A.3 | Wire `prepped` artifact into consumers | `build_tables` **and** the TimesFM endpoint/batch steps take `prepped` as an explicit input — fixes the serving branch's current *implicit* (edge-less) dependency on prepped existing |
+| 4A.4 | Results artifacts | `run_backend`/served → `Output[Metrics]` (MAE/RMSE scalars in console) + ExperimentRun name in metadata; `compare` → `Output[Markdown]` ranking; (serving model/endpoint artifacts come free from 4A.6) — satisfies #3 + results side of #4 |
+| 4A.5 | Freshness override | `data.force_rebuild` config flag + `--force-data-rebuild` CLI so the guard can be bypassed on demand |
+| 4A.6 | Adopt GCPC serving ops | `ModelUploadOp`, `EndpointCreateOp`, `ModelDeployOp`, `ModelUndeployOp`/`EndpointDeleteOp` (+ optional `ModelBatchPredictOp`); emit `google.VertexModel`/`VertexEndpoint` artifacts w/ lineage; `uv add google-cloud-pipeline-components` (pin) — satisfies #5 + serving side of #3/#4 |
+| 4A.7 | Tests + docs + verification | compile-graph tests (new nodes/edges) + step unit tests (table-exists/metadata seams); record the GCPC adoption decision in `CODE_STANDARDS.md` + `CLAUDE.md`; offline gate; **cheap `--disable-automl` live test** of data step + artifacts + GCPC serving, then one full run |
+| 4A.8 | Right-size `component_machine_type` | drop the default from `e2-standard-4` → `e2-standard-2` (config + `schemas.py` default). The component pods are **supervisors** (esp. `run-backend:automl`, which blocks polling the managed AutoML `TrainingPipeline`), not compute; 4 vCPU sits ~idle. Smaller pod = lower cost, no latency cost. Consider a per-task override if any in-process step (BQML/TimesFM serving glue) ever needs more |
+
+**Notes / rationale:**
+- *Frozen data → the data step is almost always a no-op.* Stage 1 pinned the public window to
+  2018-05-31, so `source`/`prepped` are effectively static; the guard makes the common case a fast
+  existence check. The value is reproducibility / fresh-project bootstrap, not per-run compute
+  (a naive `CREATE OR REPLACE` would re-bill the ~4.4 GB source every run — explicitly avoided).
+- *Two steps, not one* (`source` → `prepped`): `source` changes ~never while `prepped` changes with
+  covariate/split config, so independent caching + cleaner lineage (source → prepped → {train,
+  infer, timesfm}).
+- *Coupling of #3/#4 with #5:* serving-step artifacts (model, endpoint) are delivered by the GCPC
+  ops in 4A.6, so 4A.4 only hand-rolls artifacts for the **custom-kept** steps.
+- *BigQuery DDL via `BigqueryQueryJobOp`?* Evaluated, **likely keep custom** — our builders carry the
+  existence/fingerprint **skip** logic + offline tests that an opaque op can't; we can still emit a
+  `google.BQTable` artifact from the custom component.
+- *Component pods are supervisors, not workers (4A.8).* Live introspection of the comparison run
+  (2026-06-26) showed the `run-backend:automl` component is a CustomJob on `e2-standard-4` that merely
+  launches the managed AutoML `TrainingPipeline` (a separate resource) and then **blocks polling it**
+  — so its CPU chart is flat by design, and the real trainer runs on Google-managed infra with no
+  user-visible node metrics. AutoML itself exposes no machine/parallelism knob (only `budget_milli_
+  node_hours`, already at the 1000 floor); the only addressable lever is shrinking the supervisor pod.
+
+**Out of scope (held):** the heavyweight AutoML tabular workflow
+(`get_automl_forecasting_pipeline_and_parameters`) — far costlier than our locked floor-budget single
+job; and `AutoMLForecastingTrainingJobRunOp` — modest benefit, fragments the AutoML logic (column
+specs + flatten + score + track) and our preflight already de-risks the raw SDK call.
+*(Note: the `AutoMLForecastingTrainingJobRunOp` stance is being revisited in the Stage 4 redesign
+discussion — train/inference split makes GCPC ops fit; see below.)*
+
+**Backlog — `dsl.ParallelFor` (deferred 2026-06-26):** not for the cross-service axis (backends
+already run in parallel; their chains are heterogeneous; conflicts with compile-time branch
+resolution). Reserve for a homogeneous inner axis (DOE/HP variants, backtest windows). Full
+rationale: `docs/notes/pipeline-parallelfor-deferred.md`.
+
+---
+
+## Tier 2 — Stage 4 Redesign (Train/Inference Split + Hybrid GCPC) — ACTIVE
+
+Approved 2026-06-26; snapshot `docs/plans/005_stage-4-redesign-train-inference-split.md`. Splits
+every backend into **train → infer → score** (trained model passed by reference, so an infer-side
+failure re-uses the cached model and the AutoML table-name bug class cannot recur) feeding **one
+shared score/track** step. **Phased:** Phase 1 = the split (custom, no new deps); Phase 2 = hybrid
+GCPC serving + surviving 4A items. Each phase ends in a STOP checkpoint.
+
+### Phase 1 — Train / Inference / Score split (custom; no new dependencies)
+
+| # | Item | Status | Commit |
+|---|------|--------|--------|
+| P1.1 | `Forecaster` interface: `model_reference` + `attach_model` (base default; bqml/automl overrides) | done | 172a6b4 |
+| P1.2 | `steps.py`: `train_backend_step` + `infer_backend_step`; shared `score_and_track_step` (model-config params); retire `run_backend_step` | done | 172a6b4 |
+| P1.3 | `components.py`: `train_backend`/`infer_backend`/`score_and_track`; strip score+track from endpoint/batch predict | done | 172a6b4 |
+| P1.4 | `pipeline.py`: rewire `_body` to train→infer→score per backend + TimesFM→score; `train:`/`infer:`/`score:` display names | done | 172a6b4 |
+| P1.5 | Offline gate green + compile asserts train→infer→score edges; **cheap `--disable-automl` live run**; STOP | done | 172a6b4, 25a7400 |
+
+Offline gate green (158 passed; ruff/format/ty clean) and the compiled DAG verified:
+`build-tables → train:{m} → infer:{m} → score:{m} → compare`, TimesFM `register → deploy →
+endpoint-predict → score:timesfm → compare`, teardown as ExitHandler. **Live `--disable-automl` run
+`…-20260626114824` SUCCEEDED** end-to-end: BQML train→infer→score, TimesFM register→deploy→
+endpoint-predict→score, compare winner **bqml_arima_xreg** (MAE 77.7 vs TimesFM 85.5), ExitHandler
+teardown. AutoML deferred to the Phase 2 full run (avoids a throwaway ~2.5h; first live check of
+`e8a0f5f`). **Phase 1 complete — STOP approved 2026-06-26.**
+
+**Fan-in fix (25a7400):** `compare-backends` failed twice live before passing — KFP collects
+`score_and_track` outputs into the `rows` list by *textual* substitution into the executor-input
+JSON, so a dict output failed type binding and a raw-JSON-string output broke the JSON (unescaped
+quotes). Fix: `score_and_track` returns **base64(JSON)**, `compare_backends` decodes; a contract test
+asserts the output stays in the base64 alphabet so a regression fails offline, not in a live run.
+Idiomatic artifact-based fan-in (replacing the base64 hop) is a Phase 2 cleanup candidate.
+
+### Phase 2 — Hybrid GCPC serving + data prep + artifacts — COMPLETE
+
+Folds in surviving 4A items. Ordered by user priority (lineage first) + dependency. GCPC pin verified
+2026-06-26: `google-cloud-pipeline-components==2.22.0` declares `kfp<3,>=2.6.0` + `aiplatform<2,>=1.14.0`
+→ our kfp 2.16.1 / aiplatform 1.158.0 both satisfy (real resolver dry-run still required before adding).
+
+| # | Item | Status | Commit |
+|---|------|--------|--------|
+| P2.1 | **Data→serving lineage (4A.2+4A.3):** `build_tables` emits table-ref `Dataset` artifacts (`bq://` + config fingerprint + rows); wire into train/infer **and** TimesFM serving steps (closes edge-less serving branch) | done | be5383d |
+| P2.2 | Self-bootstrapping data prep (4A.1): `ensure_source`/`ensure_prepped` front steps, existence + fingerprint guard | done | af65db6 |
+| P2.3 | Hybrid GCPC serving (4A.6): `gcpc==2.22.0` after resolver dry-run; ModelUpload/EndpointCreate/ModelDeploy; AutoML+BQML stay custom | done | a8f06de |
+| P2.4 | Richer artifacts (4A.4): `Output[Metrics]` on score, `Output[Markdown]` ranking on compare; *candidate:* replace base64 fan-in with artifact fan-in | done | 002812c |
+| P2.5 | force_rebuild (4A.5) + machine right-size (4A.8, e2-standard-4→e2-standard-2) | done | ea9cad4 |
+| P2.6 | Docs: hybrid-GCPC decision in CODE_STANDARDS + CLAUDE | done | 8374006 |
+| P2.7a | **Cheap `--disable-automl` live run** — first live validation of P2.3 GCPC serving + P2.1/P2.2 data-prep+lineage + P2.4 artifacts + P2.5 sizing (BQML+TimesFM only) | done | c03b9ff, bf873d2, 9e8e581 |
+| P2.7b | **One full AutoML run** = redesign acceptance + first live validation of `e8a0f5f` read fix + train/infer cache-reuse → Phase 2 STOP | done | 0df799c |
+
+**P2.3 design notes (full-hybrid, approved 2026-06-26):** resolver dry-run clean (gcpc 2.22.0 adds only
+itself; kfp 2.16.1 / aiplatform 1.158.0 satisfy). GCPC ops run in Google-managed images → no runtime
+image rebuild; gcpc is a compile-time dep only. Endpoint path = `importer(UnmanagedContainerModel)` →
+`ModelUploadOp` → `EndpointCreateOp` + `ModelDeployOp` (custom container ⇒ ModelUploadOp needs the
+containerSpec via the importer, not `serving_container_*` args). **Deviations from the 4A.6 wording:**
+(1) `ModelUndeployOp`/`EndpointDeleteOp` are **not** adopted — they need the in-handler model/endpoint
+artifacts, which an `ExitHandler` exit task can't consume, so `teardown_serving` stays custom
+(display-name based, runs on partial failure — the stranded-endpoint guard). (2) `endpoint_predict`
+stays custom, now consuming the `VertexEndpoint` artifact's `resourceName` + ordered `.after(deploy)`.
+(3) The `prepped` lineage edge moved from register→predict (the served model reads prepped at predict
+time). (4) Batch path also uses `ModelUploadOp` (custom `batch_predict` consumes the `VertexModel`
+artifact). **Correction (live-validated in P2.7a):** the `artifact_uri=""` baked-container assumption
+was **wrong** — the GCPC `importer` rejects an empty URI (`INVALID_ARGUMENT`, "Failed to get the URI
+of the artifact to import"). Fixed with `config.timesfm_artifact_uri` (a stable empty GCS prefix
+`gs://…/serving/<model>/`; Vertex copies its empty contents to `AIP_STORAGE_URI`, the baked container
+ignores it). See the P2.7a notes below.
+
+**P2.5 design notes (2026-06-26):** Two independent sub-features. (1) **force_rebuild (4A.5):**
+`DataConfig.force_rebuild: bool = False` + `submit.with_data_rebuild_forced` (model_dump→patch→
+model_validate, no input mutation) + `--force-data-rebuild` CLI flag (standalone `if`, composes with
+`--enable/--disable-automl`); the `ensure_source`/`ensure_prepped` components pass
+`force=cfg.data.force_rebuild` into the already-`force`-aware steps. (2) **machine right-size (4A.8):**
+`component_machine_type` was a DEAD config knob (declared + set in YAML, consumed nowhere) — so beyond
+flipping the default `e2-standard-4`→`e2-standard-2` I **wired it** so the right-size is real. KFP
+lightweight components expose no machine-type setter; on Vertex/GEAP Pipelines the CPU/memory limits
+select the *closest-match* machine, so `config.component_resources` maps the machine type → `(cpu, mem)`
+(`e2-standard-2`→`("2","8G")`, ×4/×8; raises `ValueError` on an unknown type — fail loud, no silent
+fallback) and `pipeline._size` applies `set_cpu_limit`/`set_memory_limit` to the **custom** component
+pods only. **GCPC ops (importer/model-upload/endpoint-create/model-deploy) are deliberately left
+unsized** — they run in Google-managed images. Reviews-as-gates ([[sdd-reviews-as-gates]]): spec
+reviewer ✅ + code-quality reviewer ✅ Approved (only minors; reviewer confirmed against GEAP docs that
+cpu/mem limits → closest machine type). Offline gate 175 passed. Live machine-size effect first
+observed in P2.7.
+
+**P2.6 design notes (2026-06-26):** New authoritative section in `CODE_STANDARDS.md` ("Pipeline
+components — GCPC vs custom (hybrid serving)") states the split rule for adding pipeline nodes: GCPC
+ops **only** for opaque managed serving infra (importer → ModelUploadOp → EndpointCreateOp +
+ModelDeployOp; standardized `google.Vertex*` artifacts + lineage; compile-time-only dep, no image
+rebuild; test wiring via compile), custom `@dsl.component` shells for **all logic** (data prep,
+build-tables, train/infer, shared score, compare, endpoint/batch predict; AutoML + BQML fully custom).
+Records the three intentional deviations from a pure-GCPC lifecycle (custom display-name teardown via
+ExitHandler since `ModelUndeployOp`/`EndpointDeleteOp` can't consume in-handler artifacts; custom
+`endpoint_predict` consuming `VertexEndpoint.resourceName` `.after(deploy)`; `_size` applied to custom
+pods only). `CLAUDE.md` gets a one-paragraph pointer to that section. Reviews-as-gates
+([[sdd-reviews-as-gates]]): accuracy reviewer verified every claim against the code — all ACCURATE bar
+one wording nit (kfp 2.16.1 is the *locked* version, constrained `>=2,<3` in pyproject, not
+hard-pinned), fixed before commit. Docs-only; offline gate still green (175 passed).
+
+**P2.7a design notes (2026-06-26):** First live run of the never-before-executed P2.3 GCPC serving
+path, `--disable-automl` (BQML + TimesFM only) to skip the ~2.5h billable AutoML training. Required a
+runtime image rebuild (components import `geaptimes` from the base image; digest `86a6e6dc…`). Two
+live bugs found and fixed: (1) **importer `artifact_uri=""` rejected** — the P2.3 baked-container
+assumption was wrong; fixed with `config.timesfm_artifact_uri` (empty GCS prefix) + a `.keep`
+placeholder object. (2) **model-deploy 404 on a cached dead endpoint** — a cached `endpoint-create`
+returned the prior run's endpoint that its ExitHandler teardown had already deleted; root cause is the
+**KFP/Vertex caching serialization gotcha** (`set_caching_options(False)` → empty `cachingOptions` →
+Vertex falls back to the pipeline-level default). Hot-fixed the run with pipeline-level
+`enable_caching=False`; the durable fix inverts the design (`9e8e581`): pipeline-level always off,
+producers opt back in per-task with explicit `True`, plus a `--no-cache` flag. **Run
+`…-20260626155800` SUCCEEDED** end-to-end: winner `bqml_arima_xreg` (MAE 77.72 / RMSE 101.72) vs
+`timesfm` (85.51 / 113.65) — matches the Stage 3 baseline (behavior-preserving redesign); transient
+endpoint torn down (no strand); P2.4 Markdown ranking + comparison JSON correct. Confirms there is **no
+serving-container bug** — both earlier deploy failures were the cached-dead-endpoint 404. Reviews-as-
+gates ([[sdd-reviews-as-gates]]): caching-redesign reviewer flagged the importer `--no-cache`
+consistency gap (importer defaults to cacheable), fixed before the gate went green (181 passed). Full
+live-run writeup in `docs/notes/stage-4-managed-pipelines-live-run.md`.
+
+**P2.7b design notes (2026-06-26):** The full three-backend run (`--no-cache`, clean from-scratch),
+run `…-20260626174237`, **SUCCEEDED** end-to-end — the Phase 2 / redesign acceptance. AutoML's
+`train-backend → infer-backend` chain ran green: **first live validation of the `e8a0f5f` read fix**
+(the read-side bug that killed the original ~2.5h run after training) and proof the train/infer split
+works (the trained model is passed as an artifact, so an infer-side failure would re-use it instead of
+re-training). Acceptance (9/9, see `/tmp/geaptimes_p27b_verify.py`): pipeline + all tasks
+SUCCEEDED/SKIPPED; **3 ExperimentRuns** under `citibike-daily-baseline` (one per backend); winner
+**`bqml_arima_xreg`** MAE 77.72 / RMSE 101.72, then `timesfm` 85.51 / 113.65, then `automl` 142.46 /
+182.83; transient endpoint **and** model torn down (full self-cleanup — `teardown_serving_step`
+deletes both when `keep_deployed=false`); `solution=geaptimes` label on the pipeline job. AutoML scored
+worst — a **modeling** outcome (1000 milli-node-hour budget), not a pipeline issue; the point of P2.7b
+was proving the full three-backend path including AutoML, which it did. Winner matches the P2.7a
+baseline → the redesign is behavior-preserving. (An ADC token lapse mid-run killed the background
+pollers but not the run; re-auth + re-poll showed SUCCEEDED.) **Phase 2 complete — STOP for approval.**
+
+**P2.4 design notes (2026-06-26):** `score_and_track` now emits `Output[Metrics]` (per-backend MAE /
+RMSE scalars, via `metrics.log_metric`) shown on the task in the Vertex Pipelines UI — in addition to
+the Vertex `ExperimentRun` logged inside the step. `compare_backends` now emits `Output[Markdown]`: a
+ranking table (rank / model / mae / rmse, winner row flagged, lowest RMSE first) alongside the
+existing comparison `Dataset` JSON + winner return. Both are additive — `pipeline.py` is unchanged
+(KFP auto-creates the output artifacts; callers don't pass them). **Base64 fan-in candidate: kept, not
+replaced.** Idiomatic artifact-based fan-in needs `dsl.Collected`, which only works under
+`dsl.ParallelFor` — and ParallelFor is deferred (see `docs/notes/pipeline-parallelfor-deferred.md`),
+since the backends are a heterogeneous compile-time Python loop, not a uniform runtime fan-out. For a
+static list of producer tasks, KFP can only fan in via a `list` *parameter* (built by textual
+substitution), so the base64 encoding remains the correct JSON-/substitution-safe hop; a contract test
+keeps it from regressing.
+
+---
+
+## Tier 2 — Stage 3 (Experiment Tracking & DOE Framework) — COMPLETE
 
 A config-driven **Design-of-Experiments** matrix expands one base config into a grid of variants;
 the **runner** drives the Stage 2 forecasters (their first live execution) and logs each run to

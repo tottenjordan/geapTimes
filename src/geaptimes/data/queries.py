@@ -10,7 +10,7 @@ Mirrors the statmike ``_source`` -> ``_prepped`` pattern:
 SQL is assembled from trusted :class:`~geaptimes.schemas.DataConfig` values (not user input).
 """
 
-from geaptimes.constants import bq_labels_option
+from geaptimes.constants import bq_labels_option, bq_table_options
 from geaptimes.schemas import DataConfig, ProjectConfig
 
 # GSOD missing-value sentinels.
@@ -37,8 +37,14 @@ def _year(date_str: str | None, default: str) -> str:
     return default
 
 
-def build_source_query(data: DataConfig, destination: str) -> str:
-    """Build ``CREATE OR REPLACE TABLE <destination>`` for the daily source table."""
+def build_source_query(
+    data: DataConfig, destination: str, *, description: str | None = None
+) -> str:
+    """Build ``CREATE OR REPLACE TABLE <destination>`` for the daily source table.
+
+    *description* (the config fingerprint hash) is embedded in the table options so the
+    self-bootstrapping ``ensure_source`` guard can read it back and skip a rebuild when current.
+    """
     series = data.series_column
     time = data.time_column
     target = data.target_column
@@ -75,7 +81,7 @@ series_tbl AS (
         series_cte = "series_tbl AS (SELECT * FROM daily)"
 
     return f"""CREATE OR REPLACE TABLE `{destination}`
-{bq_labels_option()} AS
+{bq_table_options(description=description)} AS
 WITH top_stations AS (
     SELECT {series}
     FROM `{data.trips_table}`
@@ -138,13 +144,19 @@ LEFT JOIN meta m ON CAST(m.station_id AS STRING) = CAST(sid.start_station_id AS 
 """
 
 
-def build_prepped_query(data: DataConfig, source: str, destination: str) -> str:
-    """Build ``CREATE OR REPLACE TABLE <destination>`` adding the ``splits`` column."""
+def build_prepped_query(
+    data: DataConfig, source: str, destination: str, *, description: str | None = None
+) -> str:
+    """Build ``CREATE OR REPLACE TABLE <destination>`` adding the ``splits`` column.
+
+    *description* (the config fingerprint hash) is embedded in the table options so the
+    self-bootstrapping ``ensure_prepped`` guard can read it back and skip a rebuild when current.
+    """
     time = data.time_column
     test = data.splits.test_length
     test_plus_val = data.splits.test_length + data.splits.validate_length
     return f"""CREATE OR REPLACE TABLE `{destination}`
-{bq_labels_option()} AS
+{bq_table_options(description=description)} AS
 SELECT *,
     CASE
         WHEN {time} > DATE_SUB((SELECT MAX({time}) FROM `{source}`), INTERVAL {test} DAY) THEN 'TEST'

@@ -9,11 +9,16 @@ authors = [
 requires-python = ">=3.11"
 dependencies = [
     "db-dtypes>=1.7.0",
+    "flask>=3.1.3",
     "google-cloud-aiplatform==1.158.0",
     "google-cloud-bigquery>=3.42.1",
+    "google-cloud-pipeline-components==2.22.0",
     "google-cloud-storage>=3.12.0",
+    "gunicorn>=26.0.0",
+    "kfp>=2,<3",
     "pandas>=3.0.3",
     "pydantic>=2",
+    "python-dotenv>=1.2.2",
     "pyyaml>=6.0.3",
     "timesfm[torch]==2.0.1",
 ]
@@ -73,6 +78,9 @@ ignore = [
 "src/geaptimes/data/queries.py" = [
     "S608",     # SQL built from trusted config (not user input) by design
     "E501",     # keep SQL templates readable
+]
+"src/geaptimes/pipelines/components.py" = [
+    "PLC0415",  # KFP lightweight-component bodies require function-local imports
 ]
 
 [tool.ruff.format]

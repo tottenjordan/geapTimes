@@ -22,6 +22,79 @@ this document. (`CLAUDE.md` links here.)
 - **Tests:** **`pytest`**. `uv run pytest`.
 - Config for all of the above lives in `pyproject.toml`.
 
+## Cloud preflight (validate before deploying a pipeline)
+
+The offline gate (`ruff check` → `ruff format --check` → `ty check` → `pytest`) is mandatory before
+any commit, but it cannot see Vertex's **server-side** validation of managed jobs (AutoML, pipeline
+components). Reaching that validation through a full pipeline deploy costs a container rebuild +
+submit + pod startup (~5 min per iteration). Catch those failures cheaply instead:
+
+- **Encode every server-side rule you discover as an offline invariant** with a unit test, so a
+  regression fails at `pytest` time for free. Example: `AutoMLForecaster.validate_config()` checks
+  the Vertex AutoML Forecasting column-role rules (target ∈ unavailable-at-forecast, time column ∈
+  available-at-forecast, the series identifier carries **no** transformation, every feature/target
+  carries a transformation, quantiles ⇒ `minimize-quantile-loss`).
+- **Run the live preflight before submitting** to exercise Vertex's real `create_training_pipeline`
+  validation in seconds, with **no training spend**:
+  ```bash
+  GCP_PROJECT=hybrid-vertex uv run python -m geaptimes.pipelines.submit \
+      --config config/comparison_config.yaml --preflight-automl
+  ```
+  It runs `fit(sync=False)` and waits only for the training-pipeline *resource* to be created (where
+  column/role validation runs), then cancels + deletes the probe job (it reaches `CANCELLED` before
+  any billable compute). A clean `AutoML preflight PASSED` means the config will clear validation in
+  the deployed pipeline.
+- Every new server-side error must be fixed **and** added to the static validator + a test, so the
+  slow cloud loop is paid at most once per rule.
+- **Iterate on the pipeline without the AutoML cost.** AutoML training dominates the comparison
+  run's wall-clock (~1–2 h) and is the only billable-compute backend, while every other task
+  finishes in minutes. When testing pipeline mechanics (a new image, artifact wiring, GCPC
+  components), submit with `--disable-automl` to skip it; submit the full three-backend comparison
+  (`--enable-automl`, or a config with AutoML enabled) only when you specifically need AutoML
+  results:
+  ```bash
+  GCP_PROJECT=hybrid-vertex uv run python -m geaptimes.pipelines.submit \
+      --config config/comparison_config.yaml --disable-automl
+  ```
+
+## Pipeline components — GCPC vs custom (hybrid serving)
+
+The comparison pipeline is **hybrid**: it mixes Google Cloud Pipeline Components (GCPC) with our own
+custom `@dsl.component` shells, by a deliberate split. Follow this rule when adding pipeline nodes.
+
+- **Use GCPC ops only for opaque, managed-resource *infrastructure*** — specifically the TimesFM
+  serving lifecycle: `importer` (UnmanagedContainerModel) → `ModelUploadOp` → `EndpointCreateOp` +
+  `ModelDeployOp` (`pipelines/pipeline.py`). These earn their keep by emitting standardized
+  `google.Vertex*` artifacts (`VertexModel`/`VertexEndpoint`) with ML-Metadata **lineage** and
+  billing-label propagation, and by removing infra code we'd otherwise hand-roll. They run in
+  Google-managed images, so adopting them needs **no runtime-image rebuild** — `google-cloud-pipeline-
+  components` is a **compile-time-only** dependency (pinned `==2.22.0`; declares `kfp<3,>=2.6.0` +
+  `aiplatform<2,>=1.14.0`, satisfied by our locked kfp 2.16.1 / aiplatform 1.158.0 — kfp itself is
+  constrained `>=2,<3` in `pyproject.toml`, not hard-pinned). GCPC ops are opaque, so
+  test their **DAG wiring via the compile test**, never their internals.
+- **Keep custom `@dsl.component` shells for everything with real logic** — anything that carries
+  injected-seam offline tests, `ExperimentTracker` integration, or our standardized frame mapping:
+  data prep (`ensure_source`/`ensure_prepped`), `build_tables`, `train_backend`/`infer_backend`, the
+  shared `score_and_track`, `compare_backends`, and the served paths `endpoint_predict` /
+  `batch_predict`. **AutoML and BQML stay fully custom SDK-wrappers** — the heavyweight AutoML tabular
+  workflow and `AutoMLForecastingTrainingJobRunOp` are out of scope (they'd fragment our column-spec +
+  flatten + score + track logic, and our `--preflight-automl` already de-risks the raw SDK call).
+
+**Three deviations from a pure-GCPC serving lifecycle (intentional, do not "fix"):**
+
+1. **Teardown stays custom** (`teardown_serving`, display-name based). `ModelUndeployOp` /
+   `EndpointDeleteOp` need the in-handler model/endpoint artifacts, which a `dsl.ExitHandler` exit
+   task **cannot** consume. The custom teardown resolves the endpoint by display name, so it also runs
+   on partial failure — the stranded-endpoint guard. (Always-on-exit is safe: it's idempotent / a
+   no-op when nothing is deployed.)
+2. **`endpoint_predict` stays custom** — online predict + our frame mapping. It consumes the
+   `VertexEndpoint` artifact's `resourceName` and is ordered `.after(deploy)`.
+3. **Custom component pods are right-sized, GCPC ops are not.** KFP lightweight components expose no
+   machine-type setter, so `pipeline._size` applies `set_cpu_limit`/`set_memory_limit` (mapped from
+   `component_machine_type` by `config.component_resources`) to the **custom** pods only; on Vertex
+   Pipelines those limits select the closest-match machine. GCPC ops run in Google-managed images and
+   are deliberately **left unsized**.
+
 ## Source layout
 
 - `src/` layout: the importable package is `src/geaptimes/`. Import as `from geaptimes... import ...`.
@@ -90,3 +163,12 @@ this document. (`CLAUDE.md` links here.)
 
 - Security pre-commit hooks (detect-secrets, shellcheck, actionlint, zizmor) from the
   `modern-python` skill are deferred; revisit before any public release.
+- **Optional quantile forecasting (Stage 5).** Quantiles are currently always emitted
+  (`QUANTILES = [0.1, 0.3, 0.5, 0.7, 0.9]`), which forces AutoML's `optimization_objective` to
+  `minimize-quantile-loss` and bakes the `qXX` columns into every prediction frame. Make this a
+  config switch: when quantiles are enabled, keep the current behaviour (force
+  `minimize-quantile-loss`, emit `qXX`, and add **quantile loss** to the metric suite); when
+  disabled, drop the `qXX` columns, relax the AutoML objective constraint (allow e.g.
+  `minimize-rmse`), and skip quantile metrics. Touches `models/base.py` (column constants),
+  `schemas.py` (a `quantiles` flag at the data/forecast level), `models/automl.py`
+  (`validate_config()` + `run_kwargs`), the metric suite, and the serving env (`TIMESFM_QUANTILES`).

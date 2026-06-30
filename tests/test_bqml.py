@@ -127,6 +127,16 @@ def test_fit_runs_create_model_and_labels() -> None:
     assert labeled == [("p.ds.bqml_arima_xreg__top25_h14_t14_v14", {"solution": "geaptimes"})]
 
 
+def test_model_reference_is_model_id_and_attach_is_noop() -> None:
+    # The trained-model handle is the config-derived model id, available without a live fit();
+    # attach_model is a no-op because predict() already references the model by that id.
+    cfg = _cfg()
+    fc = BQMLForecaster(cfg.models[0], cfg, query_runner=lambda _sql: pd.DataFrame())
+    assert fc.model_reference == fc.model_id == "p.ds.bqml_arima_xreg__top25_h14_t14_v14"
+    fc.attach_model("ignored")  # no raise, no state change
+    assert fc.model_reference == "p.ds.bqml_arima_xreg__top25_h14_t14_v14"
+
+
 def test_predict_maps_forecast_and_quantiles() -> None:
     cfg = _cfg()
     raw = pd.DataFrame(

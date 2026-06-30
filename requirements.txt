@@ -8,11 +8,15 @@ anyio==4.14.1
     # via
     #   google-genai
     #   httpx
+blinker==1.9.0
+    # via flask
 certifi==2026.6.17
     # via
     #   google-cloud-aiplatform
     #   httpcore
     #   httpx
+    #   kfp-server-api
+    #   kubernetes
     #   requests
 cffi==2.0.0 ; platform_python_implementation != 'PyPy'
     # via cryptography
@@ -20,8 +24,13 @@ charset-normalizer==3.4.7
     # via requests
 click==8.4.2
     # via
+    #   click-option-group
+    #   flask
     #   huggingface-hub
+    #   kfp
     #   typer
+click-option-group==0.5.7
+    # via kfp
 colorama==0.4.6 ; sys_platform == 'win32'
     # via
     #   click
@@ -44,11 +53,15 @@ db-dtypes==1.7.0
 distro==1.9.0
     # via google-genai
 docstring-parser==0.18.0
-    # via google-cloud-aiplatform
+    # via
+    #   google-cloud-aiplatform
+    #   kfp
 filelock==3.29.4
     # via
     #   huggingface-hub
     #   torch
+flask==3.1.3
+    # via geaptimes
 fsspec==2026.6.0
     # via
     #   huggingface-hub
@@ -60,6 +73,7 @@ google-api-core==2.31.0
     #   google-cloud-core
     #   google-cloud-resource-manager
     #   google-cloud-storage
+    #   kfp
 google-auth==2.55.0
     # via
     #   google-api-core
@@ -69,6 +83,8 @@ google-auth==2.55.0
     #   google-cloud-resource-manager
     #   google-cloud-storage
     #   google-genai
+    #   kfp
+    #   kubernetes
 google-cloud-aiplatform==1.158.0
     # via geaptimes
 google-cloud-bigquery==3.42.1
@@ -85,6 +101,7 @@ google-cloud-storage==3.12.0
     # via
     #   geaptimes
     #   google-cloud-aiplatform
+    #   kfp
 google-crc32c==1.8.0
     # via
     #   google-cloud-storage
@@ -111,6 +128,8 @@ grpcio==1.81.1
     #   grpcio-status
 grpcio-status==1.81.1
     # via google-api-core
+gunicorn==26.0.0
+    # via geaptimes
 h11==0.16.0
     # via httpcore
 hf-xet==1.5.1 ; platform_machine == 'AMD64' or platform_machine == 'aarch64' or platform_machine == 'amd64' or platform_machine == 'arm64' or platform_machine == 'x86_64'
@@ -130,12 +149,27 @@ idna==3.18
     #   requests
 iniconfig==2.3.0
     # via pytest
+itsdangerous==2.2.0
+    # via flask
 jinja2==3.1.6
-    # via torch
+    # via
+    #   flask
+    #   torch
+kfp==2.16.1
+    # via geaptimes
+kfp-pipeline-spec==2.16.1
+    # via kfp
+kfp-server-api==2.16.1
+    # via kfp
+kubernetes==30.1.0
+    # via kfp
 markdown-it-py==4.2.0
     # via rich
 markupsafe==3.0.3
-    # via jinja2
+    # via
+    #   flask
+    #   jinja2
+    #   werkzeug
 mdurl==0.1.2
     # via markdown-it-py
 mpmath==1.3.0
@@ -193,11 +227,16 @@ nvidia-nvshmem-cu13==3.4.5 ; sys_platform == 'linux'
     # via torch
 nvidia-nvtx==13.0.85 ; sys_platform == 'linux'
     # via cuda-toolkit
+oauthlib==3.3.1
+    # via
+    #   kubernetes
+    #   requests-oauthlib
 packaging==26.2
     # via
     #   db-dtypes
     #   google-cloud-aiplatform
     #   google-cloud-bigquery
+    #   gunicorn
     #   huggingface-hub
     #   pytest
 pandas==3.0.3
@@ -221,6 +260,8 @@ protobuf==6.33.6
     #   googleapis-common-protos
     #   grpc-google-iam-v1
     #   grpcio-status
+    #   kfp
+    #   kfp-pipeline-spec
     #   proto-plus
 pyarrow==24.0.0
     # via db-dtypes
@@ -249,11 +290,15 @@ pytest-cov==7.1.0
 python-dateutil==2.9.0.post0
     # via
     #   google-cloud-bigquery
+    #   kfp-server-api
+    #   kubernetes
     #   pandas
 pyyaml==6.0.3
     # via
     #   geaptimes
     #   huggingface-hub
+    #   kfp
+    #   kubernetes
 requests==2.34.2
     # via
     #   google-api-core
@@ -261,6 +306,13 @@ requests==2.34.2
     #   google-cloud-bigquery
     #   google-cloud-storage
     #   google-genai
+    #   kubernetes
+    #   requests-oauthlib
+    #   requests-toolbelt
+requests-oauthlib==2.0.0
+    # via kubernetes
+requests-toolbelt==1.0.0
+    # via kfp
 rich==15.0.0
     # via typer
 safetensors==0.8.0
@@ -270,11 +322,16 @@ setuptools==81.0.0
 shellingham==1.5.4
     # via typer
 six==1.17.0
-    # via python-dateutil
+    # via
+    #   kfp-server-api
+    #   kubernetes
+    #   python-dateutil
 sniffio==1.3.1
     # via google-genai
 sympy==1.14.0
     # via torch
+tabulate==0.10.0
+    # via kfp
 tenacity==9.1.4
     # via google-genai
 timesfm==2.0.1
@@ -306,6 +363,14 @@ typing-inspection==0.4.2
 tzdata==2026.2 ; sys_platform == 'emscripten' or sys_platform == 'win32'
     # via pandas
 urllib3==2.7.0
-    # via requests
+    # via
+    #   kfp
+    #   kfp-server-api
+    #   kubernetes
+    #   requests
+websocket-client==1.9.0
+    # via kubernetes
 websockets==16.0
     # via google-genai
+werkzeug==3.1.8
+    # via flask

@@ -22,3 +22,5 @@ at the plan-approval (ExitPlanMode) gate, frozen at approval time.
 
 - `001_stage-1-data-architecture-and-config-schema.md`
 - `002_stage-2-model-factory-and-forecaster-abstractions.md`
+- `003_stage-3-experiment-tracking-and-doe-framework.md`
+- `004_stage-4-managed-pipelines-and-cloud-orchestration.md`

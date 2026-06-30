@@ -1,0 +1,21 @@
+# Keep the Cloud Build context (the repo) small + the image clean. The Dockerfile only needs
+# pyproject.toml, README.md, and src/.
+.git
+.venv
+**/__pycache__
+**/*.pyc
+.pytest_cache
+.ruff_cache
+.ty_cache
+htmlcov
+.coverage
+tests
+data_notebooks
+docs
+scripts
+config
+.env
+.env.*
+*.ipynb
+uv.lock
+requirements.txt

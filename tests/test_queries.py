@@ -66,6 +66,16 @@ def test_prepped_query_splits() -> None:
     assert 'OPTIONS(labels=[("solution", "geaptimes")])' in sql  # required GCP label
 
 
+def test_source_and_prepped_queries_embed_fingerprint_description() -> None:
+    # The fingerprint hash is written into the table description so the ensure_* guards can read it
+    # back; labels stay present alongside it.
+    src = build_source_query(DataConfig(), "p.d.source", description="abc123")
+    prepped = build_prepped_query(DataConfig(), "p.d.source", "p.d.prepped", description="abc123")
+    for sql in (src, prepped):
+        assert '("solution", "geaptimes")' in sql
+        assert 'description="abc123"' in sql
+
+
 def test_train_query_excludes_test() -> None:
     sql = build_train_query(DataConfig(), "p.d.prepped", "p.d.train")
     assert "CREATE OR REPLACE TABLE `p.d.train`" in sql

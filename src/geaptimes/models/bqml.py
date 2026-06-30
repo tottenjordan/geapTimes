@@ -162,6 +162,14 @@ class BQMLForecaster(Forecaster):
         model.labels = labels
         client.update_model(model, ["labels"])
 
+    @property
+    def model_reference(self) -> str:
+        """The fully-qualified BQML model id; config-derived, so stable without a live ``fit()``."""
+        return self.model_id
+
+    # attach_model is the inherited no-op: predict() already references the model by id (the same
+    # config-derived self.model_id), so no live handle needs to be restored between split steps.
+
     def fit(self) -> None:
         """Create (train) the ARIMA model in BigQuery and apply resource labels."""
         sql = build_create_model_sql(

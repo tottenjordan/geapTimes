@@ -2,14 +2,17 @@
 
 The substantive job of this wrapper is translating the typed config into the
 ``AutoMLForecastingTrainingJob`` SDK surface: the covariate **column roles** (attribute /
-available-at-forecast / unavailable-at-forecast), the forecast horizon and context window, the
-daily granularity, the ``splits`` predefined-split column, the standardized
-:data:`~geaptimes.models.base.QUANTILES`, holiday regions, and the ``solution=geaptimes`` labels.
+available-at-forecast / unavailable-at-forecast, with the target itself marked unavailable as Vertex
+requires), the explicit **column transformations** (``auto`` for every used column *including the
+target* -- the SDK's default omits the target, which Vertex Forecasting then rejects), the forecast
+horizon and context window, the daily granularity, Vertex's default chronological split over the
+TEST-free train table, the standardized :data:`~geaptimes.models.base.QUANTILES`, holiday regions,
+and the ``solution=geaptimes`` labels.
 
 Training and batch prediction run on Vertex (long-running, billable), so ``aiplatform`` is an
 injected seam — the kwargs builders are pure and unit-tested offline, and Stage 2 never launches a
-job. The first live AutoML run happens in Stage 3/4, which also confirms the batch-prediction
-output schema consumed by :meth:`AutoMLForecaster._to_predictions`.
+job. The first live AutoML run happens in Stage 4, which also confirms the nested batch-prediction
+output struct flattened by :meth:`AutoMLForecaster._flatten_automl_output`.
 """
 
 from typing import TYPE_CHECKING, Any, cast
@@ -41,9 +44,41 @@ logger = get_logger(__name__)
 
 _GRANULARITY_UNIT = "day"
 _GRANULARITY_COUNT = 1
-_SPLIT_COLUMN = "splits"
+# Vertex requires this objective whenever quantile forecasts are requested (which we always do).
+_QUANTILE_LOSS_OBJECTIVE = "minimize-quantile-loss"
 # Column emitted by Vertex batch prediction holding the point forecast (flattened by the reader).
 _PREDICTED_VALUE_COLUMN = "value"
+# Vertex forecasting batch output nests results in a STRUCT column named predicted_<target> with
+# fields: value (point), quantile_values (the trained levels), quantile_predictions (parallel).
+_QUANTILE_VALUES_FIELD = "quantile_values"
+_QUANTILE_PREDICTIONS_FIELD = "quantile_predictions"
+_QUANTILE_MATCH_TOLERANCE = 1e-6
+
+
+def _label_bq_table(client: Any, table_id: str) -> None:  # noqa: ANN401 - external SDK client
+    """Best-effort stamp of ``RESOURCE_LABELS`` on a table Vertex created without labels.
+
+    Vertex's batch-prediction service applies the job's labels to the ``BatchPredictionJob``
+    resource but **not** to the auto-created ``predictions_<ts>`` output table, so we set them
+    explicitly to keep every asset carrying ``solution=geaptimes``. A failure here (e.g. a transient
+    BigQuery error) is a governance nit, not a result error, so it is logged and swallowed rather
+    than failing the backend.
+    """
+    try:
+        table = client.get_table(table_id)
+        table.labels = {**(table.labels or {}), **RESOURCE_LABELS}
+        client.update_table(table, ["labels"])
+    except Exception:  # noqa: BLE001 - labelling is best-effort governance, never fatal
+        logger.warning("could not label predictions table %s", table_id, exc_info=True)
+
+
+def _match_quantile_index(levels: "list[float]", level: float) -> int:
+    """Index of ``level`` within the model's emitted quantile levels (float-tolerant)."""
+    for i, candidate in enumerate(levels):
+        if abs(float(candidate) - level) < _QUANTILE_MATCH_TOLERANCE:
+            return i
+    msg = f"quantile level {level} not found in AutoML output levels {levels}"
+    raise ValueError(msg)
 
 
 class AutoMLForecaster(Forecaster):
@@ -56,13 +91,20 @@ class AutoMLForecaster(Forecaster):
         *,
         aiplatform: Any = None,  # noqa: ANN401 - external SDK module, injected for tests
         prediction_reader: "Callable[[], pd.DataFrame] | None" = None,
+        sync: bool = True,
     ) -> None:
         super().__init__(model_cfg, cfg)
         self.params: AutoMLParams = cast("AutoMLParams", model_cfg.params)
         self._aiplatform = aiplatform
         self._prediction_reader = prediction_reader
+        # sync=False returns from fit() as soon as the training pipeline is created (server-side
+        # column validation has run) without waiting for training -- used by the preflight check.
+        self._sync = sync
         self.display_name = f"{model_cfg.name}__{config_slug(cfg.data, cfg.forecast)}"
         self.model: Any = None
+        # Live handles captured by fit() so a preflight can cancel/clean up the launched resources.
+        self.training_job: Any = None
+        self.dataset: Any = None
 
     # -- config translation (pure, fully tested) --------------------------------------------
     def _bq_uri(self, role: str) -> str:
@@ -73,11 +115,37 @@ class AutoMLForecaster(Forecaster):
         region = self.cfg.data.holiday_region
         return [region] if region else None
 
+    def _column_specs(self) -> dict[str, str]:
+        """Column-type transformations for every column the model uses.
+
+        The SDK's default (passing neither ``column_specs`` nor ``column_transformations``) auto-
+        generates an ``auto`` transformation for every dataset column *except the target* -- but
+        Vertex Forecasting then rejects the job because the target carries no transformation
+        ("The target column ... does not have a numeric or auto transformation."). So we build the
+        specs ourselves, mirroring that default ``auto`` behaviour while *including* the target.
+        Columns are the union of the target, the time column, and the three covariate groups. The
+        time-series **identifier** column is deliberately excluded: Vertex rejects a transformation
+        on a column with no time-dependency role ("... have transformation but do not have any time
+        dependency properties"), and the identifier is a key, not a feature. Duplicates collapse in
+        the dict.
+        """
+        data = self.cfg.data
+        covariates = data.covariates
+        columns = [
+            data.target_column,
+            data.time_column,
+            *covariates.time_series_attribute_columns,
+            *covariates.available_at_forecast_columns,
+            *covariates.unavailable_at_forecast_columns,
+        ]
+        return dict.fromkeys(columns, "auto")
+
     def training_job_kwargs(self) -> dict[str, Any]:
         """Constructor kwargs for ``AutoMLForecastingTrainingJob``."""
         return {
             "display_name": self.display_name,
             "optimization_objective": self.params.optimization_objective,
+            "column_specs": self._column_specs(),
             "labels": dict(RESOURCE_LABELS),
         }
 
@@ -85,24 +153,82 @@ class AutoMLForecaster(Forecaster):
         """``.run()`` kwargs: column roles, horizon/context, granularity, split, quantiles."""
         data = self.cfg.data
         covariates = data.covariates
+        # Vertex AutoML requires the target column itself to be declared unavailable-at-forecast
+        # (its future value is unknown at prediction time); add it if not already listed.
+        unavailable = list(covariates.unavailable_at_forecast_columns)
+        if data.target_column not in unavailable:
+            unavailable.append(data.target_column)
+        # Vertex requires the time column itself to be declared available-at-forecast (its future
+        # values -- the forecast dates -- are known at prediction time); add it if not listed.
+        available = list(covariates.available_at_forecast_columns)
+        if data.time_column not in available:
+            available.append(data.time_column)
         return {
             "target_column": data.target_column,
             "time_column": data.time_column,
             "time_series_identifier_column": data.series_column,
             "time_series_attribute_columns": list(covariates.time_series_attribute_columns),
-            "available_at_forecast_columns": list(covariates.available_at_forecast_columns),
-            "unavailable_at_forecast_columns": list(covariates.unavailable_at_forecast_columns),
+            "available_at_forecast_columns": available,
+            "unavailable_at_forecast_columns": unavailable,
             "forecast_horizon": self.cfg.forecast.horizon,
             "context_window": self.params.context_window,
             "budget_milli_node_hours": self.params.budget_milli_node_hours,
             "data_granularity_unit": _GRANULARITY_UNIT,
             "data_granularity_count": _GRANULARITY_COUNT,
-            "predefined_split_column_name": _SPLIT_COLUMN,
+            # No predefined split: the training dataset is the TEST-free train table, so Vertex's
+            # default chronological auto-split is used for AutoML's internal validation. (A
+            # predefined `splits` column can't be used here: Vertex requires the values
+            # TRAIN/VALIDATION/TEST, but the train table has no TEST rows by design.) The backtest
+            # stays honest -- AutoML never sees the TEST window, which we score via batch predict.
             "quantiles": list(QUANTILES),
             "holiday_regions": self._holiday_regions(),
             "model_display_name": self.display_name,
             "model_labels": dict(RESOURCE_LABELS),
         }
+
+    def validate_config(self) -> None:
+        """Fail fast on the Vertex AutoML Forecasting column-role invariants we know about.
+
+        These mirror the server-side ``create_training_pipeline`` validation we discovered on live
+        runs. Checking them here means a regression is caught offline (unit tests) and before any
+        billable API call -- not 4 minutes into a deployed pipeline. The list is the *known* rules;
+        the live preflight (:func:`geaptimes.pipelines.submit.preflight_automl`) remains the
+        catch-all for anything Vertex enforces that we haven't encoded yet.
+        """
+        data = self.cfg.data
+        run = self.run_kwargs()
+        specs = self._column_specs()
+        target, time = data.target_column, data.time_column
+        problems: list[str] = []
+        # We always pass quantiles, so Vertex demands the quantile-loss objective.
+        if run.get("quantiles") and self.params.optimization_objective != _QUANTILE_LOSS_OBJECTIVE:
+            problems.append(
+                f"optimization_objective must be {_QUANTILE_LOSS_OBJECTIVE!r} when quantiles are "
+                f"requested (got {self.params.optimization_objective!r})"
+            )
+        if target not in run["unavailable_at_forecast_columns"]:
+            problems.append(f"target {target!r} must be in unavailable_at_forecast_columns")
+        if time not in run["available_at_forecast_columns"]:
+            problems.append(f"time column {time!r} must be in available_at_forecast_columns")
+        # Every feature/target column needs a transformation; the identifier must NOT have one
+        # (Vertex rejects a transformation on a column with no time-dependency role).
+        if data.series_column in specs:
+            problems.append(
+                f"series column {data.series_column!r} must not have a column_specs transformation"
+            )
+        role_columns = {
+            target,
+            time,
+            *run["time_series_attribute_columns"],
+            *run["available_at_forecast_columns"],
+            *run["unavailable_at_forecast_columns"],
+        }
+        missing = sorted(column for column in role_columns if column not in specs)
+        if missing:
+            problems.append(f"columns missing a column_specs transformation: {missing}")
+        if problems:
+            msg = "invalid AutoML config:\n- " + "\n- ".join(problems)
+            raise ValueError(msg)
 
     def batch_predict_kwargs(self) -> dict[str, Any]:
         """Kwargs for ``model.batch_predict`` against the infer table (BQ → BQ)."""
@@ -124,25 +250,44 @@ class AutoMLForecaster(Forecaster):
             self._aiplatform = aiplatform
         return self._aiplatform
 
-    def fit(self) -> None:
-        """Create a TimeSeriesDataset from the train table and launch managed training."""
+    @property
+    def model_reference(self) -> str:
+        """Resource name of the trained Vertex ``Model`` (empty until ``fit()`` has run)."""
+        return self.model.resource_name if self.model is not None else ""
+
+    def attach_model(self, reference: str) -> None:
+        """Resolve the trained Vertex ``Model`` by resource name so ``predict()`` skips training.
+
+        Lets the infer step batch-predict against a model trained in a prior train step (or a prior
+        run), so an inference-side failure costs only a re-predict, never a re-train.
+        """
         aip = self._resolve_aiplatform()
         aip.init(project=self.cfg.project.id, location=self.cfg.project.region)
-        dataset = aip.TimeSeriesDataset.create(
+        self.model = aip.Model(reference)
+
+    def fit(self) -> None:
+        """Create a TimeSeriesDataset from the train table and launch managed training."""
+        self.validate_config()
+        aip = self._resolve_aiplatform()
+        aip.init(project=self.cfg.project.id, location=self.cfg.project.region)
+        self.dataset = aip.TimeSeriesDataset.create(
             display_name=self.display_name,
             bq_source=self._bq_uri("train"),
             labels=dict(RESOURCE_LABELS),
         )
-        job = aip.AutoMLForecastingTrainingJob(**self.training_job_kwargs())
+        self.training_job = aip.AutoMLForecastingTrainingJob(**self.training_job_kwargs())
         logger.info("launching AutoML training job %s", self.display_name)
-        self.model = job.run(dataset=dataset, **self.run_kwargs())
+        self.model = self.training_job.run(
+            dataset=self.dataset, sync=self._sync, **self.run_kwargs()
+        )
 
     def predict(self) -> ForecastResult:
         """Batch-predict over the infer table and map results onto the standardized frame."""
         import pandas as pd  # noqa: PLC0415 - lazy heavy import
 
         raw = self._read_predictions()
-        predictions = self._to_predictions(raw, pd)
+        flat = self._flatten_automl_output(raw, pd)
+        predictions = self._to_predictions(flat, pd)
         metadata = {
             "job_display_name": self.display_name,
             "objective": self.params.optimization_objective,
@@ -150,22 +295,71 @@ class AutoMLForecaster(Forecaster):
         return ForecastResult(predictions=predictions, metadata=metadata)
 
     def _read_predictions(self) -> "pd.DataFrame":
-        """Submit batch prediction and return the (flattened) predictions frame."""
+        """Submit batch prediction and return the raw predictions frame."""
         if self._prediction_reader is not None:
             return self._prediction_reader()
         if self.model is None:  # pragma: no cover - guard for unfitted live use
             msg = "AutoMLForecaster.predict() requires fit() (or an injected prediction_reader)"
             raise RuntimeError(msg)
-        self.model.batch_predict(**self.batch_predict_kwargs())  # pragma: no cover - live only
-        msg = "Reading the AutoML batch-prediction output table is wired in Stage 4"
-        raise NotImplementedError(msg)  # pragma: no cover - live only
+        job = self.model.batch_predict(**self.batch_predict_kwargs())  # pragma: no cover - live
+        return self._read_output_table(job)  # pragma: no cover - live only
+
+    @staticmethod
+    def _output_table_id(job: Any) -> str:  # noqa: ANN401 - external SDK job
+        """Fully-qualified id of the table Vertex wrote the batch predictions to.
+
+        Vertex auto-creates a *timestamped* ``predictions_<ts>`` table in the destination dataset;
+        the exact name is read from ``output_info.bigquery_output_table`` (the ``_<ts>`` suffix is
+        per-run, so it must never be hardcoded). The name is resolved from the job output, not user
+        input.
+        """
+        info = job.output_info
+        dataset = info.bigquery_output_dataset.removeprefix("bq://")
+        return f"{dataset}.{info.bigquery_output_table}"
+
+    def _read_output_table(self, job: Any) -> "pd.DataFrame":  # noqa: ANN401 - external SDK job
+        """Read (and label) the BQ table Vertex wrote the batch predictions to."""
+        from google.cloud import bigquery  # noqa: PLC0415 - lazy cloud import
+
+        table_id = self._output_table_id(job)
+        client = bigquery.Client(project=self.cfg.project.id)
+        _label_bq_table(client, table_id)
+        sql = f"SELECT * FROM `{table_id}`"  # noqa: S608
+        return client.query(sql).to_dataframe()
+
+    def _flatten_automl_output(self, raw: "pd.DataFrame", pd: Any) -> "pd.DataFrame":  # noqa: ANN401
+        """Flatten Vertex's nested ``predicted_<target>`` struct to flat value + quantile columns.
+
+        Already-flat frames (e.g. an injected ``prediction_reader``) pass through unchanged. The
+        nested struct exposes ``value`` (point), ``quantile_values`` (the trained levels), and the
+        parallel ``quantile_predictions``; we select the standardized :data:`QUANTILES` by matching
+        levels. The exact field names are confirmed on the first live run (Stage 4).
+        """
+        data = self.cfg.data
+        struct_col = f"predicted_{data.target_column}"
+        if struct_col not in raw.columns:
+            return raw
+
+        records: list[dict[str, Any]] = []
+        for _, row in raw.iterrows():
+            struct = row[struct_col]
+            levels = [float(level) for level in struct[_QUANTILE_VALUES_FIELD]]
+            preds = list(struct[_QUANTILE_PREDICTIONS_FIELD])
+            record: dict[str, Any] = {
+                data.series_column: row[data.series_column],
+                data.time_column: row[data.time_column],
+                _PREDICTED_VALUE_COLUMN: float(struct[_PREDICTED_VALUE_COLUMN]),
+            }
+            for level in QUANTILES:
+                record[quantile_column(level)] = float(preds[_match_quantile_index(levels, level)])
+            records.append(record)
+        return pd.DataFrame.from_records(records)
 
     def _to_predictions(self, raw: "pd.DataFrame", pd: Any) -> "pd.DataFrame":  # noqa: ANN401
         """Map the flattened batch-prediction frame onto :data:`PREDICTION_COLUMNS`.
 
-        Expects the reader to expose the series/time keys, a point ``value`` column, and one
-        column per standardized quantile (``q10``..``q90``). The exact Vertex output schema is
-        confirmed on the first live run (Stage 4).
+        Expects series/time keys, a point ``value`` column, and one column per standardized
+        quantile (``q10``..``q90``) — i.e. the output of :meth:`_flatten_automl_output`.
         """
         data = self.cfg.data
         out = pd.DataFrame()
