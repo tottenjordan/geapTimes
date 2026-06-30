@@ -257,7 +257,7 @@ quotes). Fix: `score_and_track` returns **base64(JSON)**, `compare_backends` dec
 asserts the output stays in the base64 alphabet so a regression fails offline, not in a live run.
 Idiomatic artifact-based fan-in (replacing the base64 hop) is a Phase 2 cleanup candidate.
 
-### Phase 2 — Hybrid GCPC serving + data prep + artifacts — ACTIVE
+### Phase 2 — Hybrid GCPC serving + data prep + artifacts — COMPLETE
 
 Folds in surviving 4A items. Ordered by user priority (lineage first) + dependency. GCPC pin verified
 2026-06-26: `google-cloud-pipeline-components==2.22.0` declares `kfp<3,>=2.6.0` + `aiplatform<2,>=1.14.0`
@@ -272,7 +272,7 @@ Folds in surviving 4A items. Ordered by user priority (lineage first) + dependen
 | P2.5 | force_rebuild (4A.5) + machine right-size (4A.8, e2-standard-4→e2-standard-2) | done | ea9cad4 |
 | P2.6 | Docs: hybrid-GCPC decision in CODE_STANDARDS + CLAUDE | done | 8374006 |
 | P2.7a | **Cheap `--disable-automl` live run** — first live validation of P2.3 GCPC serving + P2.1/P2.2 data-prep+lineage + P2.4 artifacts + P2.5 sizing (BQML+TimesFM only) | done | c03b9ff, bf873d2, 9e8e581 |
-| P2.7b | **One full AutoML run** = redesign acceptance + first live validation of `e8a0f5f` read fix + train/infer cache-reuse → Phase 2 STOP | pending | |
+| P2.7b | **One full AutoML run** = redesign acceptance + first live validation of `e8a0f5f` read fix + train/infer cache-reuse → Phase 2 STOP | done | PLACEHOLDER_P27B_HASH |
 
 **P2.3 design notes (full-hybrid, approved 2026-06-26):** resolver dry-run clean (gcpc 2.22.0 adds only
 itself; kfp 2.16.1 / aiplatform 1.158.0 satisfy). GCPC ops run in Google-managed images → no runtime
@@ -339,8 +339,22 @@ endpoint torn down (no strand); P2.4 Markdown ranking + comparison JSON correct.
 serving-container bug** — both earlier deploy failures were the cached-dead-endpoint 404. Reviews-as-
 gates ([[sdd-reviews-as-gates]]): caching-redesign reviewer flagged the importer `--no-cache`
 consistency gap (importer defaults to cacheable), fixed before the gate went green (181 passed). Full
-live-run writeup in `docs/notes/stage-4-managed-pipelines-live-run.md`. **P2.7b (one full AutoML run)
-is the only item left before the Phase 2 STOP.**
+live-run writeup in `docs/notes/stage-4-managed-pipelines-live-run.md`.
+
+**P2.7b design notes (2026-06-26):** The full three-backend run (`--no-cache`, clean from-scratch),
+run `…-20260626174237`, **SUCCEEDED** end-to-end — the Phase 2 / redesign acceptance. AutoML's
+`train-backend → infer-backend` chain ran green: **first live validation of the `e8a0f5f` read fix**
+(the read-side bug that killed the original ~2.5h run after training) and proof the train/infer split
+works (the trained model is passed as an artifact, so an infer-side failure would re-use it instead of
+re-training). Acceptance (9/9, see `/tmp/geaptimes_p27b_verify.py`): pipeline + all tasks
+SUCCEEDED/SKIPPED; **3 ExperimentRuns** under `citibike-daily-baseline` (one per backend); winner
+**`bqml_arima_xreg`** MAE 77.72 / RMSE 101.72, then `timesfm` 85.51 / 113.65, then `automl` 142.46 /
+182.83; transient endpoint **and** model torn down (full self-cleanup — `teardown_serving_step`
+deletes both when `keep_deployed=false`); `solution=geaptimes` label on the pipeline job. AutoML scored
+worst — a **modeling** outcome (1000 milli-node-hour budget), not a pipeline issue; the point of P2.7b
+was proving the full three-backend path including AutoML, which it did. Winner matches the P2.7a
+baseline → the redesign is behavior-preserving. (An ADC token lapse mid-run killed the background
+pollers but not the run; re-auth + re-poll showed SUCCEEDED.) **Phase 2 complete — STOP for approval.**
 
 **P2.4 design notes (2026-06-26):** `score_and_track` now emits `Output[Metrics]` (per-backend MAE /
 RMSE scalars, via `metrics.log_metric`) shown on the task in the Vertex Pipelines UI — in addition to

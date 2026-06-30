@@ -1,8 +1,9 @@
-# Stage 4 — managed pipelines live run (P2.7a)
+# Stage 4 — managed pipelines live runs (P2.7a + P2.7b)
 
-First live execution of the redesigned hybrid GCPC comparison pipeline on Vertex AI. This is the
-`--disable-automl` validation (P2.7a): it proves the full Phase 2 path **except** AutoML (BQML +
-TimesFM only). The one remaining full-AutoML run is P2.7b (the Phase 2 STOP).
+Live execution of the redesigned hybrid GCPC comparison pipeline on Vertex AI. **P2.7a** is the
+`--disable-automl` validation (BQML + TimesFM only — proves the full Phase 2 path except AutoML);
+**P2.7b** is the full three-backend run that adds AutoML and is the Phase 2 STOP. The P2.7a sections
+come first; the P2.7b section is at the end.
 
 ## Environment
 
@@ -97,3 +98,30 @@ Polling: `aiplatform.PipelineJob.get(RN)` — pipeline state 3=RUNNING/4=SUCCEED
 Inspecting serving-container logs: filter `resource.type="aiplatform.googleapis.com/Endpoint"` **by
 endpoint_id** — the shared `hybrid-vertex` project has many other endpoints (taxifare, churn,
 vertex-custom-serve) whose `/health` logs are noise.
+
+## P2.7b — full three-backend run (AutoML included)
+
+The Phase 2 / redesign acceptance run: all three backends (`--no-cache`, clean from-scratch). Run
+`geaptimes-comparison-top25-h14-t14-v14-20260626174237` **SUCCEEDED** end-to-end.
+
+- **AutoML ran green** — `train-backend-2 → infer-backend-2 → score-and-track-2`. This is the **first
+  live validation of the `e8a0f5f` read fix**: the original Stage-4 run died here, after ~2.5h of
+  successful training, on a hardcoded predictions-table name in `_read_output_table`. It also proves
+  the **train/infer split** — the trained model is passed as an artifact, so an inference-side failure
+  re-uses the cached trained model instead of re-running the ~2.5h training job.
+- **Ranking** (one shared scorer, all backends): `bqml_arima_xreg` MAE 77.72 / RMSE 101.72 (winner) >
+  `timesfm` 85.51 / 113.65 > `automl` 142.46 / 182.83. AutoML scored worst — a **modeling** outcome at
+  the 1000 milli-node-hour budget, not a pipeline fault. Winner matches P2.7a → behavior-preserving.
+- **Full self-cleanup** — both the transient endpoint *and* the model were torn down by the
+  `ExitHandler` (`teardown_serving_step` deletes both when `keep_deployed=false`). So after a clean run
+  there is no persisted TimesFM `Model` to label-check; the durable `solution=geaptimes` evidence is on
+  the pipeline job (and the BQ assets).
+
+Acceptance (9/9) is scripted read-only in `/tmp/geaptimes_p27b_verify.py`: pipeline + per-task states,
+AutoML chain, winner from the `compare-backends` `comparison` Dataset, 3 ExperimentRuns (one per
+backend — note run names are `_safe_run_name`d so `bqml_arima_xreg` → `bqml-arima-xreg-…`), endpoint +
+model torn down, and the pipeline-job `solution` label.
+
+**Auth gotcha:** a mid-run ADC token lapse (`503 … Reauthentication is needed`) killed the background
+pollers and broke the notebooks — but **not** the pipeline (it runs server-side). `gcloud auth
+application-default login` restored everything; the run was unaffected and showed SUCCEEDED on re-poll.
