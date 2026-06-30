@@ -15,7 +15,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from geaptimes.experiment.doe import expand, point_slug
-from geaptimes.experiment.metrics import point_metrics
+from geaptimes.experiment.metrics import evaluate
 from geaptimes.experiment.tracking import ExperimentTracker
 from geaptimes.models.factory import ForecastFactory
 from geaptimes.naming import table_names
@@ -72,13 +72,14 @@ def run_experiment(
                 forecaster.fit()
                 result = forecaster.predict()
                 data = point.config.data
-                metrics = point_metrics(
+                evaluation = evaluate(
                     result.predictions,
                     actuals,
                     series_col=data.series_column,
                     time_col=data.time_column,
                     target_col=data.target_column,
                 )
+                metrics = evaluation.summary()
                 tracker.log_params(_run_params(point.config, forecaster, point.overrides))
                 tracker.log_metrics(metrics)
                 artifact_uri = tracker.log_artifacts(
@@ -90,7 +91,7 @@ def run_experiment(
                     model=forecaster.name,
                     overrides=dict(point.overrides),
                     metrics=metrics,
-                    metadata=dict(result.metadata),
+                    metadata={**dict(result.metadata), "per_series": evaluation.per_series},
                     artifact_uri=artifact_uri,
                 )
             )

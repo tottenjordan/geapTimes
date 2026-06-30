@@ -13,7 +13,8 @@ guarded so a point where both actual and forecast are zero (a perfect prediction
 rather than NaN. sMAPE is reported as a percentage in ``[0, 200]``.
 """
 
-from typing import TYPE_CHECKING
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any
 
 from geaptimes.models.base import (
     DATE_COLUMN,
@@ -27,6 +28,33 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     import pandas as pd
 
 _ACTUAL_COLUMN = "actual"
+
+
+@dataclass(frozen=True)
+class Evaluation:
+    """The full standardized evaluation of one backend over one backtest.
+
+    Aggregate scalars (``mae``/``rmse`` match :func:`point_metrics` exactly) plus a ``per_series``
+    breakdown (one dict per series with ``series`` + the same scalar metrics). :meth:`summary`
+    returns just the aggregate scalars, ready to hand to ``ExperimentTracker.log_metrics``.
+    """
+
+    mae: float
+    rmse: float
+    smape: float
+    quantile_loss: float
+    n_points: float
+    per_series: list[dict[str, Any]] = field(default_factory=list)
+
+    def summary(self) -> dict[str, float]:
+        """Aggregate scalar metrics only (no per-series breakdown)."""
+        return {
+            "mae": self.mae,
+            "rmse": self.rmse,
+            "smape": self.smape,
+            "quantile_loss": self.quantile_loss,
+            "n_points": self.n_points,
+        }
 
 
 def point_metrics(
@@ -75,8 +103,8 @@ def evaluate(  # noqa: PLR0913 - predictions + actuals + 3 config column names +
     time_col: str,
     target_col: str,
     quantiles: "list[float] | None" = None,
-) -> dict[str, object]:
-    """Return the full standardized evaluation suite for ``predictions`` vs ``actuals``.
+) -> Evaluation:
+    """Return the full standardized :class:`Evaluation` for ``predictions`` vs ``actuals``.
 
     Computes aggregate ``mae``, ``rmse``, ``smape`` (percent, guarded), ``quantile_loss`` (mean
     pinball loss across ``quantiles``), and ``n_points`` — plus a ``per_series`` breakdown (the same
@@ -96,12 +124,11 @@ def evaluate(  # noqa: PLR0913 - predictions + actuals + 3 config column names +
         value_cols=value_cols,
     )
 
-    summary = _summary(merged, levels)
     per_series = [
         {"series": series, **_summary(group, levels)}
         for series, group in merged.groupby(SERIES_COLUMN, sort=True)
     ]
-    return {**summary, "per_series": per_series}
+    return Evaluation(**_summary(merged, levels), per_series=per_series)
 
 
 def _merge(  # noqa: PLR0913 - predictions + actuals + 3 config column names + value_cols selector

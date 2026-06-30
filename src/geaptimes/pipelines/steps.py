@@ -7,7 +7,7 @@ module, BigQuery readers, GCS IO) is an injected seam with a lazy live default, 
 unit-tests offline with fakes — the same discipline as the Stage 2/3 forecasters and tracker.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from geaptimes.data.queries import (
@@ -16,7 +16,8 @@ from geaptimes.data.queries import (
     build_source_query,
     build_train_query,
 )
-from geaptimes.experiment.metrics import point_metrics
+from geaptimes.experiment.comparison import Comparison, rank_backends
+from geaptimes.experiment.metrics import evaluate
 from geaptimes.experiment.runner import (
     RunRecord,
     _default_actuals_loader,
@@ -360,13 +361,14 @@ def score_and_track_step(  # noqa: PLR0913 - cfg + name + frame + injected seams
     data = cfg.data
     run_name = _safe_run_name(f"{model_name}-{clock().strftime('%Y%m%d-%H%M%S')}")
     actuals = load_actuals(cfg)
-    metrics = point_metrics(
+    evaluation = evaluate(
         predictions,
         actuals,
         series_col=data.series_column,
         time_col=data.time_column,
         target_col=data.target_column,
     )
+    metrics = evaluation.summary()
     logger.info("scoring backend %s as %s", model_name, run_name)
     artifact_uri = ""
     if tracker is not None:
@@ -379,7 +381,7 @@ def score_and_track_step(  # noqa: PLR0913 - cfg + name + frame + injected seams
         model=model_name,
         overrides={},
         metrics=metrics,
-        metadata={},
+        metadata={"per_series": evaluation.per_series},
         artifact_uri=artifact_uri,
     )
     return BackendResult(record=record, predictions=predictions)
@@ -492,25 +494,12 @@ def teardown_serving_step(
             model.delete()
 
 
-@dataclass
-class Comparison:
-    """The side-by-side comparison outcome."""
-
-    ranking: list[dict[str, Any]] = field(default_factory=list)
-    winner: str = ""
-
-
 def compare_step(results: "list[tuple[str, dict[str, float]]]") -> Comparison:
-    """Rank backends by RMSE (tie-break MAE); the lowest-error model wins."""
-    ranking: list[dict[str, Any]] = [
-        {
-            "model": name,
-            "mae": float(m.get("mae", float("inf"))),
-            "rmse": float(m.get("rmse", float("inf"))),
-        }
-        for name, m in results
-    ]
-    ranking.sort(key=lambda r: (r["rmse"], r["mae"]))
-    winner = str(ranking[0]["model"]) if ranking else ""
-    logger.info("comparison winner: %s", winner)
-    return Comparison(ranking=ranking, winner=winner)
+    """Rank backends by RMSE (tie-break MAE); the lowest-error model wins.
+
+    Thin wrapper over :func:`~geaptimes.experiment.comparison.rank_backends` so the pipeline's
+    ``compare-backends`` step and the ``run_experiment`` CLI rank backends identically.
+    """
+    comparison = rank_backends(results)
+    logger.info("comparison winner: %s", comparison.winner)
+    return comparison

@@ -1,11 +1,9 @@
 """Offline tests for the point-metric helper and the Stage 5 standardized eval suite."""
 
-from typing import cast
-
 import pandas as pd
 import pytest
 
-from geaptimes.experiment.metrics import evaluate, point_metrics
+from geaptimes.experiment.metrics import Evaluation, evaluate, point_metrics
 from geaptimes.models.base import (
     DATE_COLUMN,
     FORECAST_COLUMN,
@@ -51,7 +49,7 @@ def _metrics(preds: pd.DataFrame, actuals: pd.DataFrame) -> dict[str, float]:
     )
 
 
-def _evaluate(preds: pd.DataFrame, actuals: pd.DataFrame) -> dict[str, object]:
+def _evaluate(preds: pd.DataFrame, actuals: pd.DataFrame) -> Evaluation:
     return evaluate(preds, actuals, series_col=SERIES_COL, time_col=TIME_COL, target_col=TARGET_COL)
 
 
@@ -93,9 +91,9 @@ def test_evaluate_superset_matches_point_metrics() -> None:
     point = _metrics(preds, actuals)
     full = _evaluate(preds, actuals)
     # mae / rmse / n_points are byte-for-byte the same as the minimal helper.
-    assert full["mae"] == point["mae"]
-    assert full["rmse"] == point["rmse"]
-    assert full["n_points"] == point["n_points"]
+    assert full.mae == point["mae"]
+    assert full.rmse == point["rmse"]
+    assert full.n_points == point["n_points"]
 
 
 def test_evaluate_smape_exact() -> None:
@@ -104,7 +102,7 @@ def test_evaluate_smape_exact() -> None:
     actuals = _actuals(["s", "s"], ["2018-05-18", "2018-05-19"], [12.0, 12.0])
     out = _evaluate(preds, actuals)
     expected = ((2.0 / 11.0) + 0.0) / 2.0 * 100.0
-    assert out["smape"] == pytest.approx(expected)
+    assert out.smape == pytest.approx(expected)
 
 
 def test_evaluate_smape_guards_both_zero() -> None:
@@ -112,8 +110,8 @@ def test_evaluate_smape_guards_both_zero() -> None:
     preds = _preds(["s"], ["2018-05-18"], [0.0])
     actuals = _actuals(["s"], ["2018-05-18"], [0.0])
     out = _evaluate(preds, actuals)
-    assert out["smape"] == 0.0
-    assert out["mae"] == 0.0
+    assert out.smape == 0.0
+    assert out.mae == 0.0
 
 
 def test_evaluate_quantile_loss_zero_when_quantiles_match_actual() -> None:
@@ -127,7 +125,7 @@ def test_evaluate_quantile_loss_zero_when_quantiles_match_actual() -> None:
     )
     actuals = _actuals(["s", "s"], ["2018-05-18", "2018-05-19"], actual)
     out = _evaluate(preds, actuals)
-    assert out["quantile_loss"] == pytest.approx(0.0)
+    assert out.quantile_loss == pytest.approx(0.0)
 
 
 def test_evaluate_quantile_loss_exact() -> None:
@@ -143,7 +141,7 @@ def test_evaluate_quantile_loss_exact() -> None:
         return max(q * delta, (q - 1.0) * delta)
 
     losses = [pinball(q, qpreds[q][0]) for q in QUANTILES]
-    assert out["quantile_loss"] == pytest.approx(sum(losses) / len(losses))
+    assert out.quantile_loss == pytest.approx(sum(losses) / len(losses))
 
 
 def test_evaluate_per_series_breakdown() -> None:
@@ -158,8 +156,7 @@ def test_evaluate_per_series_breakdown() -> None:
         [12.0, 8.0, 20.0],
     )
     out = _evaluate(preds, actuals)
-    rows = cast("list[dict[str, object]]", out["per_series"])
-    per_series = {row["series"]: row for row in rows}
+    per_series = {row["series"]: row for row in out.per_series}
     assert set(per_series) == {"a", "b"}
     # series "a": errors -2, +2 -> mae 2.0; series "b": perfect -> mae 0.0
     assert per_series["a"]["mae"] == pytest.approx(2.0)
