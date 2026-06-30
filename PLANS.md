@@ -45,7 +45,7 @@ teardown guard); the **optional-quantiles** switch stays in the backlog (`CODE_S
 |---|------|--------|--------|
 | 5.1 | `experiment/metrics.py` — eval suite: guarded sMAPE, pinball/quantile loss over `QUANTILES`, per-series breakdown, `evaluate()` aggregator (keep `point_metrics`) | done | `5d71aa8` |
 | 5.2 | Unify: wire `evaluate()` into `runner.py` + `score_and_track_step`; shared `rank_backends` helper for `compare_backends` Markdown ranking | done | `7244b3c` |
-| 5.3 | `scripts/run_experiment.py` CLI — argparse over `run_experiment` (`--config`, `--enable/--disable-automl`, `--dry-run`), RunRecord table + comparison report | pending | — |
+| 5.3 | `scripts/run_experiment.py` CLI — argparse over `run_experiment` (`--config`, `--enable/--disable-automl`, `--dry-run`), RunRecord table + comparison report | done | `518a1b9` |
 | 5.4 | Warm endpoints + reuse: `keep_deployed` warm mode, `find_reusable_endpoint_step` (fingerprint = sha256(image **digest** + serving env) label lookup), DAG reuse branch, "only tear down what this run created" guard | pending | — |
 | 5.5 | Offline gate + cheap `--disable-automl` live run (warm deploy → reuse → guarded teardown + unified richer metrics live); `docs/notes/`; **STOP** | pending | — |
 
