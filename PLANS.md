@@ -46,7 +46,7 @@ teardown guard); the **optional-quantiles** switch stays in the backlog (`CODE_S
 | 5.1 | `experiment/metrics.py` — eval suite: guarded sMAPE, pinball/quantile loss over `QUANTILES`, per-series breakdown, `evaluate()` aggregator (keep `point_metrics`) | done | `5d71aa8` |
 | 5.2 | Unify: wire `evaluate()` into `runner.py` + `score_and_track_step`; shared `rank_backends` helper for `compare_backends` Markdown ranking | done | `7244b3c` |
 | 5.3 | `scripts/run_experiment.py` CLI — argparse over `run_experiment` (`--config`, `--enable/--disable-automl`, `--dry-run`), RunRecord table + comparison report | done | `518a1b9` |
-| 5.4 | Warm endpoints + reuse: `keep_deployed` warm mode, `find_reusable_endpoint_step` (fingerprint = sha256(image **digest** + serving env) label lookup), DAG reuse branch, "only tear down what this run created" guard | pending | — |
+| 5.4 | Warm endpoints + reuse: `keep_deployed` warm mode, `find_reusable_endpoint_step` (fingerprint = sha256(image **digest** + serving env) label lookup), DAG reuse branch, "only tear down what this run created" guard | done | `a2f5e1f` |
 | 5.5 | Offline gate + cheap `--disable-automl` live run (warm deploy → reuse → guarded teardown + unified richer metrics live); `docs/notes/`; **STOP** | pending | — |
 
 ### Stage 5 design notes
@@ -61,6 +61,22 @@ teardown guard); the **optional-quantiles** switch stays in the backlog (`CODE_S
   richer-metrics path is covered offline + by the already-proven train/infer split.
 - **Reviews-as-gates** ([[sdd-reviews-as-gates]]) on 5.4 — the teardown guard + concurrency are the
   riskiest surface (deleting a shared warm endpoint is a destructive regression).
+
+**5.4 implementation notes (2026-06-30, `a2f5e1f`):** snapshot `docs/plans/006_*` covers the design;
+key build decisions: (1) reuse is resolved **at submit time** (a live call sequence like the AutoML
+preflight) and the DAG **branches at compile time** — not a runtime `dsl.If` — matching the recorded
+"branch at compile time, the YAML shows exactly what executes" convention; `build_pipeline(cfg, *,
+reused_endpoint, serving_fingerprint)` are compile-time inputs, not pipeline params. (2) Digest
+resolution shells `gcloud` behind an injected runner (the 4.7 injectable-gcloud precedent), not a new
+AR SDK dep. (3) Reuse predict is a small sibling component `endpoint_predict_by_name` (a plain string
+param), avoiding the importer-URI semantics that bit us in P2.7a. **Two teardown guards:** primary —
+no teardown task is emitted on a reuse run (`needs_teardown` gate); secondary —
+`teardown_serving_step` skips any endpoint/model labelled `keep=true`. Reviews-as-gates
+([[sdd-reviews-as-gates]]): code-quality reviewer APPROVE-WITH-NITS; fixed the one MEDIUM finding
+before the gate (the `keep` label is now stamped whenever `keep_deployed`, **independent of reuse
+mode**, so a warm endpoint created without reuse is still protected from a later transient run sharing
+its display name) plus a fail-loud on an empty resolved digest. Offline gate green (218 passed).
+**Live validation deferred to 5.5.**
 
 ---
 
