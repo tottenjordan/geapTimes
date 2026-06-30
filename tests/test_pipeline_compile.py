@@ -99,6 +99,39 @@ def test_keep_deployed_skips_teardown(tmp_path: Path) -> None:
     assert "exec-teardown-serving" not in execs
 
 
+def test_reuse_branch_skips_serving_lifecycle(tmp_path: Path) -> None:
+    # A warm endpoint resolved at submit time -> predict straight against it, skipping the whole
+    # register -> create -> deploy lifecycle, and emit no teardown (we did not create it).
+    out = compile_pipeline(
+        _cfg(ALL_THREE),
+        tmp_path / "pipeline.yaml",
+        reused_endpoint="projects/x/locations/us-central1/endpoints/123",
+        serving_fingerprint="feedface",
+    )
+    spec = yaml.safe_load(Path(out).read_text(encoding="utf-8"))
+    execs = set(spec["deploymentSpec"]["executors"].keys())
+    assert "exec-endpoint-predict-by-name" in execs
+    assert "exec-endpoint-predict" not in execs  # the fresh-deploy predict is gone
+    assert "exec-importer" not in execs
+    assert "exec-model-upload" not in execs
+    assert "exec-endpoint-create" not in execs
+    assert "exec-model-deploy" not in execs
+    assert "exec-teardown-serving" not in execs  # reuse => no teardown
+    # the in-process backends + one shared scorer per backend are unchanged
+    assert len({e for e in execs if e.startswith("exec-score-and-track")}) == 3
+
+
+def test_fresh_path_stamps_serving_fingerprint_label(tmp_path: Path) -> None:
+    # With a serving fingerprint supplied (reuse mode), the deployed model + endpoint carry the
+    # fingerprint label so a later run can discover and reuse them.
+    out = compile_pipeline(
+        _cfg(ALL_THREE),
+        tmp_path / "pipeline.yaml",
+        serving_fingerprint="feedface",
+    )
+    assert "feedface" in Path(out).read_text(encoding="utf-8")
+
+
 def test_timesfm_disabled_skips_serving(tmp_path: Path) -> None:
     models = [
         {"name": "timesfm", "enabled": False, "params": {"type": "timesfm"}},

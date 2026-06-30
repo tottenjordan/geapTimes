@@ -32,6 +32,7 @@ class PipelineComponents:
     infer_backend: Any
     score_and_track: Any
     endpoint_predict: Any
+    endpoint_predict_by_name: Any
     batch_predict: Any
     teardown_serving: Any
     compare_backends: Any
@@ -183,6 +184,23 @@ def build_components(image: str) -> PipelineComponents:  # noqa: PLR0915, C901 -
         frame.to_parquet(predictions.path, index=False)
 
     @dsl.component(base_image=image)
+    def endpoint_predict_by_name(
+        config_json: str,
+        endpoint_resource_name: str,
+        prepped: dsl.Input[dsl.Dataset],
+        predictions: dsl.Output[dsl.Dataset],
+    ) -> None:
+        from geaptimes.pipelines import steps
+        from geaptimes.schemas import ExperimentConfig
+
+        _ = prepped  # lineage edge: the online predictions read context from the prepped table
+        # Reuse branch: the endpoint resource name is a known string (a warm endpoint resolved at
+        # submit time), so there is no GCPC VertexEndpoint artifact to consume -- predict directly.
+        cfg = ExperimentConfig.model_validate_json(config_json)
+        frame = steps.endpoint_predict_step(cfg, endpoint_resource_name)
+        frame.to_parquet(predictions.path, index=False)
+
+    @dsl.component(base_image=image)
     def batch_predict(
         config_json: str,
         model: dsl.Input[dsl.Artifact],
@@ -239,6 +257,7 @@ def build_components(image: str) -> PipelineComponents:  # noqa: PLR0915, C901 -
         infer_backend=infer_backend,
         score_and_track=score_and_track,
         endpoint_predict=endpoint_predict,
+        endpoint_predict_by_name=endpoint_predict_by_name,
         batch_predict=batch_predict,
         teardown_serving=teardown_serving,
         compare_backends=compare_backends,

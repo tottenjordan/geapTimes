@@ -5,6 +5,8 @@ the pipeline root, and the TimesFM model/endpoint display names) so the step fun
 components don't recompute them. All functions are pure and unit-tested offline.
 """
 
+import hashlib
+import json
 from typing import TYPE_CHECKING, Any
 
 from geaptimes.constants import RESOURCE_LABELS
@@ -20,6 +22,13 @@ _DEFAULT_MAX_CONTEXT = 1024
 _HEALTH_ROUTE = "/health"
 _PREDICT_ROUTE = "/predict"
 _SERVING_PORT = 8080
+
+# Label keys for warm-endpoint reuse. ``fingerprint`` makes a deployed model/endpoint discoverable
+# by its serving contract; ``keep`` marks a warm (kept-running) deployment so the transient teardown
+# never deletes it. GCP label values are ``[a-z0-9_-]{0,63}`` -- the fingerprint is truncated hex.
+_FINGERPRINT_LABEL = "fingerprint"
+_KEEP_LABEL = "keep"
+_FINGERPRINT_LEN = 16
 
 # Custom component executor sizing: machine type -> (cpu limit, memory limit). KFP lightweight
 # components expose no machine-type knob; on Vertex Pipelines the CPU/memory limits select the
@@ -103,6 +112,54 @@ def serving_env_vars(cfg: "ExperimentConfig") -> dict[str, str]:
         "TIMESFM_HORIZON": str(cfg.forecast.horizon),
         "TIMESFM_QUANTILES": "true" if quantiles else "false",
     }
+
+
+def serving_fingerprint(cfg: "ExperimentConfig", image_digest: str) -> str:
+    """Stable short hash identifying an interchangeable TimesFM deployment.
+
+    Two TimesFM deployments are reuse-compatible iff their serving contract matches: the resolved
+    image **digest** (the checkpoint is baked into the image, so the digest -- not the mutable
+    ``:latest`` tag -- pins the model) plus the serving env vars (:func:`serving_env_vars`, which
+    include checkpoint / max-context / context-len / horizon / quantiles). Hashing the digest is the
+    point: a rebuilt image gets a new fingerprint, so a stale endpoint is never reused. Truncated to
+    16 hex chars -- lowercase hex is GCP-label-safe and well under the 63-char label-value limit.
+    """
+    payload = json.dumps(
+        {"image_digest": image_digest, "serving_env": serving_env_vars(cfg)},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:_FINGERPRINT_LEN]
+
+
+def serving_labels(cfg: "ExperimentConfig", fingerprint: str = "") -> dict[str, str]:
+    """Resource labels stamped on every deployed TimesFM model/endpoint.
+
+    Always carries ``keep`` (``"true"`` when ``serving.keep_deployed`` -- a warm deployment the
+    transient teardown's guard must skip). The ``keep`` label is independent of reuse: a warm
+    endpoint created with ``keep_deployed=True`` but ``reuse_endpoint=False`` is still protected
+    from a later transient run that shares its (config-derived) display name. The ``fingerprint``
+    reuse key (:func:`serving_fingerprint`) is added only when one was resolved (reuse mode), so a
+    deploy is discoverable for reuse without polluting non-reuse deployments with an empty label.
+    """
+    labels = {
+        **resource_labels(),
+        _KEEP_LABEL: "true" if cfg.pipeline.serving.keep_deployed else "false",
+    }
+    if fingerprint:
+        labels[_FINGERPRINT_LABEL] = fingerprint
+    return labels
+
+
+def reusable_endpoint_filter(fingerprint: str) -> str:
+    """Vertex ``Endpoint.list`` filter matching a warm endpoint by fingerprint + solution label."""
+    solution = RESOURCE_LABELS["solution"]
+    return f'labels.{_FINGERPRINT_LABEL}="{fingerprint}" AND labels.solution="{solution}"'
+
+
+def is_kept_warm(labels: "dict[str, str] | None") -> bool:
+    """Whether a resource's labels mark it as a kept-warm deployment (teardown must skip it)."""
+    return bool(labels) and labels.get(_KEEP_LABEL) == "true"
 
 
 def component_resources(cfg: "ExperimentConfig") -> tuple[str, str]:

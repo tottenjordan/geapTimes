@@ -8,6 +8,7 @@ import pytest
 import yaml
 
 from geaptimes.pipelines import submit
+from geaptimes.pipelines.config import serving_fingerprint
 from geaptimes.schemas import ExperimentConfig
 
 BASE = {
@@ -159,6 +160,75 @@ def test_submit_pipeline_compiles_and_submits(tmp_path: Path) -> None:
     assert "config_json" in job.kwargs["parameter_values"]
     # submitted under the experiment
     assert job.submitted_experiment == "citibike-daily-baseline"
+
+
+def _capture_compile(monkeypatch: pytest.MonkeyPatch, captured: dict[str, object]) -> None:
+    """Replace submit.compile_pipeline with a stub that records the reuse passthrough kwargs."""
+
+    def fake_compile(
+        _cfg: ExperimentConfig,
+        out_path: object,
+        *,
+        reused_endpoint: str = "",
+        serving_fingerprint: str = "",
+    ) -> str:
+        captured["reused_endpoint"] = reused_endpoint
+        captured["serving_fingerprint"] = serving_fingerprint
+        return str(out_path)
+
+    monkeypatch.setattr(submit, "compile_pipeline", fake_compile)
+
+
+def test_submit_pipeline_reuse_passes_resolved_endpoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, object] = {}
+    _capture_compile(monkeypatch, captured)
+    monkeypatch.setattr(submit, "resolve_image_digest_step", lambda _cfg: "sha256:abc")
+    monkeypatch.setattr(
+        submit,
+        "find_reusable_endpoint_step",
+        lambda _cfg, _fp, *, aiplatform: "projects/x/endpoints/warm",  # noqa: ARG005 - fake
+    )
+    cfg = _cfg(pipeline={"serving": {"reuse_endpoint": True}})
+    submit.submit_pipeline(cfg, aiplatform=_FakeAip(), template_path=tmp_path / "p.yaml")
+    assert captured["reused_endpoint"] == "projects/x/endpoints/warm"
+    # the fingerprint is computed from the resolved digest and threaded through for label stamping
+    assert captured["serving_fingerprint"] == serving_fingerprint(cfg, "sha256:abc")
+
+
+def test_submit_pipeline_reuse_no_match_deploys_fresh(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, object] = {}
+    _capture_compile(monkeypatch, captured)
+    monkeypatch.setattr(submit, "resolve_image_digest_step", lambda _cfg: "sha256:abc")
+    monkeypatch.setattr(
+        submit,
+        "find_reusable_endpoint_step",
+        lambda _cfg, _fp, *, aiplatform: "",  # noqa: ARG005 - fake: no warm endpoint
+    )
+    cfg = _cfg(pipeline={"serving": {"reuse_endpoint": True}})
+    submit.submit_pipeline(cfg, aiplatform=_FakeAip(), template_path=tmp_path / "p.yaml")
+    assert captured["reused_endpoint"] == ""  # falls through to the fresh-deploy path
+    assert captured["serving_fingerprint"]  # still stamped so the fresh deploy is discoverable
+
+
+def test_submit_pipeline_no_reuse_makes_no_lookup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, object] = {}
+    _capture_compile(monkeypatch, captured)
+
+    def _boom(*_a: object, **_k: object) -> str:
+        msg = "reuse lookup must not run when reuse_endpoint is off"
+        raise AssertionError(msg)
+
+    monkeypatch.setattr(submit, "resolve_image_digest_step", _boom)
+    monkeypatch.setattr(submit, "find_reusable_endpoint_step", _boom)
+    submit.submit_pipeline(_cfg(), aiplatform=_FakeAip(), template_path=tmp_path / "p.yaml")
+    assert captured["reused_endpoint"] == ""
+    assert captured["serving_fingerprint"] == ""
 
 
 def test_submit_pipeline_pipeline_level_caching_always_off(tmp_path: Path) -> None:

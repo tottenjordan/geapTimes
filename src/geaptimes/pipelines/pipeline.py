@@ -29,7 +29,7 @@ from geaptimes.pipelines.config import (
     component_resources,
     image_uri,
     pipeline_root,
-    resource_labels,
+    serving_labels,
     timesfm_artifact_uri,
     timesfm_container_spec,
     timesfm_endpoint_display_name,
@@ -60,8 +60,21 @@ def pipeline_name(cfg: "ExperimentConfig") -> str:
     return f"geaptimes-comparison-{config_slug(cfg.data, cfg.forecast).replace('_', '-')}"
 
 
-def build_pipeline(cfg: "ExperimentConfig") -> "BaseComponent":  # noqa: PLR0915 - one task per DAG node
-    """Build the comparison pipeline component for *cfg* (ready for ``compiler.Compiler``)."""
+def build_pipeline(  # noqa: PLR0915 - one task per DAG node
+    cfg: "ExperimentConfig",
+    *,
+    reused_endpoint: str = "",
+    serving_fingerprint: str = "",
+) -> "BaseComponent":
+    """Build the comparison pipeline component for *cfg* (ready for ``compiler.Compiler``).
+
+    ``reused_endpoint`` / ``serving_fingerprint`` are **compile-time** inputs resolved live at
+    submit time (see :func:`~geaptimes.pipelines.submit.submit_pipeline`), not pipeline parameters.
+    A non-empty ``reused_endpoint`` selects the warm-endpoint *reuse* branch: skip register/deploy,
+    predict against that endpoint, and emit no teardown (we did not create it). On the fresh path a
+    non-empty ``serving_fingerprint`` stamps the reuse labels on the deployed model + endpoint so a
+    later run can discover and reuse them.
+    """
     comps = build_components(image_uri(cfg))
     root = pipeline_root(cfg)
     name = pipeline_name(cfg)
@@ -74,7 +87,11 @@ def build_pipeline(cfg: "ExperimentConfig") -> "BaseComponent":  # noqa: PLR0915
     caching = cfg.pipeline.enable_caching
     in_process = _in_process_model_names(cfg)
     timesfm = _timesfm_enabled(cfg)
-    needs_teardown = timesfm and serving.mode == "endpoint" and not serving.keep_deployed
+    # No teardown task is emitted when we reused a warm endpoint (we did not create it) -- the
+    # primary teardown guard; teardown_serving_step's keep-label skip is the secondary one.
+    needs_teardown = (
+        timesfm and serving.mode == "endpoint" and not serving.keep_deployed and not reused_endpoint
+    )
     cpu_limit, memory_limit = component_resources(cfg)
 
     def _size(task: "PipelineTask") -> None:
@@ -131,12 +148,38 @@ def build_pipeline(cfg: "ExperimentConfig") -> "BaseComponent":  # noqa: PLR0915
             score.set_display_name(f"score:{model_name}")
             _size(score)
             rows.append(score.outputs["Output"])
-        if timesfm:
+        if timesfm and reused_endpoint:
+            # Warm-endpoint reuse branch (resolved at submit time): a fingerprint-matching endpoint
+            # is already serving, so skip the whole register -> create -> deploy lifecycle and
+            # predict straight against it. No teardown is emitted (needs_teardown is False), so the
+            # shared warm endpoint survives this run.
+            served = comps.endpoint_predict_by_name(
+                config_json=config_json,
+                endpoint_resource_name=reused_endpoint,
+                prepped=prepped.outputs["prepped"],
+            )
+            served.set_display_name("timesfm:endpoint-predict-by-name")
+            served.set_caching_options(False)  # depends on the live endpoint; never cache
+            _size(served)
+            score_timesfm = comps.score_and_track(
+                config_json=config_json,
+                model_name="timesfm",
+                predictions=served.outputs["predictions"],
+            )
+            score_timesfm.set_caching_options(caching)
+            score_timesfm.set_display_name("score:timesfm")
+            _size(score_timesfm)
+            rows.append(score_timesfm.outputs["Output"])
+        elif timesfm:
             # Hybrid serving lifecycle via GCPC ops (standardized google.Vertex* artifacts +
             # ML-Metadata lineage + billing-label propagation). Our TimesFM is a *custom container*
             # with a baked checkpoint, so ModelUploadOp consumes an UnmanagedContainerModel artifact
             # carrying the containerSpec (built by an importer node) rather than serving_container_*
             # args. project/location/display names are baked at compile time (compiled per submit).
+            # Always stamp the keep label (mirrors keep_deployed) so a warm endpoint is protected
+            # from a later transient run's teardown even without reuse mode; add the fingerprint
+            # label (discoverable for reuse) when one was resolved at submit time.
+            labels = serving_labels(cfg, serving_fingerprint)
             container_spec = importer(
                 # Empty GCS prefix: checkpoint is baked into the image, but the importer node
                 # requires a non-empty URI (an empty string fails the import at runtime).
@@ -154,7 +197,7 @@ def build_pipeline(cfg: "ExperimentConfig") -> "BaseComponent":  # noqa: PLR0915
                 location=cfg.project.region,
                 display_name=timesfm_model_display_name(cfg),
                 unmanaged_container_model=container_spec.outputs["artifact"],
-                labels=resource_labels(),
+                labels=labels,
             )
             register.set_caching_options(caching)
             register.set_display_name("register-timesfm")
@@ -163,7 +206,7 @@ def build_pipeline(cfg: "ExperimentConfig") -> "BaseComponent":  # noqa: PLR0915
                     project=cfg.project.id,
                     location=cfg.project.region,
                     display_name=timesfm_endpoint_display_name(cfg),
-                    labels=resource_labels(),
+                    labels=labels,
                 )
                 # Never cache the ephemeral endpoint lifecycle: a cached endpoint-create hands back
                 # an endpoint that a prior run's ExitHandler teardown already deleted, so the deploy

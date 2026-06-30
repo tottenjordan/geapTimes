@@ -24,7 +24,9 @@ from geaptimes.pipelines.config import (
     pipeline_job_display_name,
     pipeline_root,
     resource_labels,
+    serving_fingerprint,
 )
+from geaptimes.pipelines.steps import find_reusable_endpoint_step, resolve_image_digest_step
 from geaptimes.schemas import ExperimentConfig
 from geaptimes.utils.logger import get_logger
 
@@ -133,6 +135,34 @@ def _default_template_path() -> str:
     return str(Path(tempfile.mkdtemp(prefix="geaptimes-pipeline-")) / "comparison_pipeline.yaml")
 
 
+def _resolve_reuse(cfg: ExperimentConfig, aip: Any) -> tuple[str, str]:  # noqa: ANN401 - SDK module
+    """Resolve warm-endpoint reuse at submit time: ``(reused_endpoint, serving_fingerprint)``.
+
+    When ``serving.reuse_endpoint`` is on (endpoint mode only) this resolves the runtime image's
+    Artifact Registry digest, computes the serving fingerprint, and looks up a fingerprint-matching
+    warm endpoint -- a live call sequence, like the AutoML preflight, run once per submit. A
+    non-empty ``reused_endpoint`` makes :func:`build_pipeline` take the reuse branch (no deploy, no
+    teardown); the fingerprint is always returned so the fresh path can stamp the reuse labels. When
+    reuse is off, returns ``("", "")`` and makes no cloud calls.
+    """
+    serving = cfg.pipeline.serving
+    if not (serving.reuse_endpoint and serving.mode == "endpoint"):
+        return "", ""
+    digest = resolve_image_digest_step(cfg)
+    if not digest:
+        # Fail loud: an empty digest would degrade the fingerprint to hashing only the serving env
+        # (no image discrimination), so a stale image could be reused. Better to stop the submit.
+        msg = "could not resolve runtime image digest for the serving fingerprint"
+        raise RuntimeError(msg)
+    fingerprint = serving_fingerprint(cfg, digest)
+    reused_endpoint = find_reusable_endpoint_step(cfg, fingerprint, aiplatform=aip)
+    if reused_endpoint:
+        logger.info("reuse: warm endpoint %s (fingerprint %s)", reused_endpoint, fingerprint)
+    else:
+        logger.info("reuse: no warm endpoint for fingerprint %s; deploying fresh", fingerprint)
+    return reused_endpoint, fingerprint
+
+
 def submit_pipeline(
     cfg: ExperimentConfig,
     *,
@@ -151,7 +181,8 @@ def submit_pipeline(
     """
     aip = aiplatform or _lazy_aiplatform()
     path = str(template_path) if template_path is not None else _default_template_path()
-    compile_pipeline(cfg, path)
+    reused_endpoint, fingerprint = _resolve_reuse(cfg, aip)
+    compile_pipeline(cfg, path, reused_endpoint=reused_endpoint, serving_fingerprint=fingerprint)
     aip.init(
         project=cfg.project.id,
         location=cfg.project.region,

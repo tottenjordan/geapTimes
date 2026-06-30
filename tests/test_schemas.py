@@ -112,8 +112,16 @@ def test_pipeline_defaults() -> None:
     cfg = ExperimentConfig.model_validate(VALID)
     assert cfg.pipeline.serving.mode == "endpoint"
     assert cfg.pipeline.serving.keep_deployed is False
+    assert cfg.pipeline.serving.reuse_endpoint is False
     assert cfg.pipeline.enable_caching is True
     assert cfg.pipeline.image.repo == "geaptimes"
+
+
+def test_serving_reuse_endpoint_round_trips() -> None:
+    cfg = ExperimentConfig.model_validate(
+        {**VALID, "pipeline": {"serving": {"reuse_endpoint": True}}}
+    )
+    assert cfg.pipeline.serving.reuse_endpoint is True
 
 
 def test_pipeline_image_uri_derivation() -> None:

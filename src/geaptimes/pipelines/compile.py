@@ -18,11 +18,24 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 logger = get_logger(__name__)
 
 
-def compile_pipeline(cfg: "ExperimentConfig", out_path: "str | Path") -> str:
-    """Compile the comparison pipeline for *cfg* to *out_path* (KFP IR YAML); return the path."""
+def compile_pipeline(
+    cfg: "ExperimentConfig",
+    out_path: "str | Path",
+    *,
+    reused_endpoint: str = "",
+    serving_fingerprint: str = "",
+) -> str:
+    """Compile the comparison pipeline for *cfg* to *out_path* (KFP IR YAML); return the path.
+
+    ``reused_endpoint`` / ``serving_fingerprint`` are compile-time inputs for the warm-endpoint
+    reuse branch, resolved live at submit time and threaded to :func:`build_pipeline` (they are not
+    pipeline parameters). Both default empty -- the normal fresh-deploy path.
+    """
     from kfp import compiler  # noqa: PLC0415 - keep kfp import lazy for fast offline imports
 
-    pipeline_func = build_pipeline(cfg)
+    pipeline_func = build_pipeline(
+        cfg, reused_endpoint=reused_endpoint, serving_fingerprint=serving_fingerprint
+    )
     out = str(out_path)
     compiler.Compiler().compile(pipeline_func=pipeline_func, package_path=out)
     logger.info("compiled comparison pipeline to %s", out)
