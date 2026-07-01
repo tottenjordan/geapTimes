@@ -76,7 +76,12 @@ models:
     enabled: true # comparison includes AutoML this stage
     params:
       type: automl
-      optimization_objective: minimize-quantile-loss
+      # minimize-rmse targets the conditional MEAN, fixing the median-underprediction bias seen with
+      # minimize-quantile-loss on this right-skewed count data (point forecast was the median q50 ≈
+      # 59% of actual demand). Trade-off: Vertex allows quantiles only with minimize-quantile-loss,
+      # so this run is point-only (AutoML quantile_loss will be NaN); the point metrics become an
+      # apples-to-apples comparison against the other backends' mean-targeting point forecasts.
+      optimization_objective: minimize-rmse
       context_window: 28
       budget_milli_node_hours: 1000 # floor budget (1 node-hour); keeps the live run cheap
 
