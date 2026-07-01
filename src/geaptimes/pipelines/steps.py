@@ -576,4 +576,6 @@ def compare_step(results: "list[tuple[str, dict[str, float]]]") -> Comparison:
     """
     comparison = rank_backends(results)
     logger.info("comparison winner: %s", comparison.winner)
+    for warning in comparison.warnings:
+        logger.warning("comparison: %s", warning)
     return comparison
