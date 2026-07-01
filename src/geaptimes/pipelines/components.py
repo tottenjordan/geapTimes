@@ -159,12 +159,13 @@ def build_components(image: str) -> PipelineComponents:  # noqa: PLR0915, C901 -
         ranking = {key: float(scores[key]) for key in ("mae", "rmse", "smape", "quantile_loss")}
         for key, value in ranking.items():
             metrics.log_metric(key, value)
-        # The compare payload additionally carries the display-only metrics -- demand-normalized
-        # pmae/prmse and n_points -- so the cross-backend table can show scale-free error and the
-        # per-backend denominator (the n_points parity check keys on this). These never rank.
+        # The compare payload additionally carries the display-only metrics -- statmike-parity
+        # mape/mse, demand-normalized pmae/prmse, and n_points -- so the cross-backend table shows
+        # the full reference set, scale-free error, and each backend's denominator (the n_points
+        # parity check keys on this). These never rank.
         reported = {
             **ranking,
-            **{key: float(scores[key]) for key in ("pmae", "prmse", "n_points")},
+            **{key: float(scores[key]) for key in ("mape", "mse", "pmae", "prmse", "n_points")},
         }
         # Return base64(JSON), not a dict or raw JSON string. compare_backends collects these into a
         # ``list`` param, which KFP builds by *textual* placeholder substitution into the executor

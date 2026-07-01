@@ -8,12 +8,14 @@ from geaptimes.experiment.comparison import (
 )
 
 
-def _metrics(  # noqa: PLR0913 - mirrors the full metric set (4 ranking + pmae/prmse/n_points)
+def _metrics(  # noqa: PLR0913 - mirrors the full metric set (ranking + report + count)
     mae: float,
     rmse: float,
     smape: float,
     ql: float,
     n_points: float = 308.0,
+    mape: float = 0.20,
+    mse: float = 12000.0,
     pmae: float = 0.25,
     prmse: float = 0.30,
 ) -> dict[str, float]:
@@ -22,6 +24,8 @@ def _metrics(  # noqa: PLR0913 - mirrors the full metric set (4 ranking + pmae/p
         "rmse": rmse,
         "smape": smape,
         "quantile_loss": ql,
+        "mape": mape,
+        "mse": mse,
         "pmae": pmae,
         "prmse": prmse,
         "n_points": n_points,
@@ -38,7 +42,15 @@ def test_rank_backends_orders_by_rmse_then_mae() -> None:
     assert comp.winner == "automl"
     assert [r["model"] for r in comp.ranking] == ["automl", "bqml_arima_xreg", "timesfm"]
     # every row carries the full metric set + display metrics, uniform shape regardless of source
-    assert set(comp.ranking[0]) == {"model", *RANKING_METRICS, "pmae", "prmse", "n_points"}
+    assert set(comp.ranking[0]) == {
+        "model",
+        *RANKING_METRICS,
+        "mape",
+        "mse",
+        "pmae",
+        "prmse",
+        "n_points",
+    }
     assert not comp.warnings  # equal n_points ⇒ no comparability warning
 
 
@@ -99,10 +111,21 @@ def test_render_ranking_markdown_flags_winner_and_shows_all_metrics() -> None:
     )
     md = render_ranking_markdown(comp)
     lines = md.splitlines()
-    assert lines[0] == (
-        "| rank | model | mae | rmse | smape | quantile_loss | pmae | prmse | n_points |"
-    )
-    assert lines[1] == "| --- | --- | --- | --- | --- | --- | --- | --- | --- |"
+    header_cols = [
+        "rank",
+        "model",
+        "mae",
+        "rmse",
+        "smape",
+        "quantile_loss",
+        "mape",
+        "mse",
+        "pmae",
+        "prmse",
+        "n_points",
+    ]
+    assert lines[0] == "| " + " | ".join(header_cols) + " |"
+    assert lines[1] == "| " + " | ".join(["---"] * len(header_cols)) + " |"
     assert lines[2].startswith("| 1 | bqml_arima_xreg (winner) |")
     assert "timesfm" in lines[3]
     assert "(winner)" not in lines[3]

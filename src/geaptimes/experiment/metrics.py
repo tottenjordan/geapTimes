@@ -7,10 +7,16 @@ breakdown — all over the same identical backtest (the point forecast and quant
 the held-out TEST actuals on the shared (series, date) keys). One implementation feeds both the
 offline runner and the pipeline scorer, so "identical backtests" is enforced by construction.
 
-sMAPE (not MAPE) is used because the targets are daily per-station trip counts with zero-fill: raw
-MAPE divides by ~0 on low-count stations. sMAPE's symmetric denominator ``(|a| + |f|) / 2`` is
-guarded so a point where both actual and forecast are zero (a perfect prediction) contributes 0
-rather than NaN. sMAPE is reported as a percentage in ``[0, 200]``.
+sMAPE (not MAPE) is the *primary* percentage metric because the targets are daily per-station trip
+counts with zero-fill: raw MAPE divides by ~0 on low-count stations. sMAPE's symmetric denominator
+``(|a| + |f|) / 2`` is guarded so a point where both actual and forecast are zero (a perfect
+prediction) contributes 0 rather than NaN. sMAPE is reported as a percentage in ``[0, 200]``.
+
+For direct comparison against the statmike *Vertex AI AutoML Forecasting* reference notebook, the
+suite also reports its exact SQL metric set — ``mae``, ``rmse``, classic ``mape``, ``mse``, and the
+demand-normalized ``pmae``/``prmse`` (see :func:`_summary`). Classic ``mape`` replicates the
+reference's ``SAFE_DIVIDE`` semantics (zero-actual points are dropped from the mean), so it can be
+computed over fewer points than ``n_points`` — it is a reporting metric, never a ranking key.
 """
 
 from dataclasses import dataclass, field
@@ -46,6 +52,8 @@ class Evaluation:
     rmse: float
     smape: float
     quantile_loss: float
+    mape: float
+    mse: float
     pmae: float
     prmse: float
     n_points: float
@@ -58,6 +66,8 @@ class Evaluation:
             "rmse": self.rmse,
             "smape": self.smape,
             "quantile_loss": self.quantile_loss,
+            "mape": self.mape,
+            "mse": self.mse,
             "pmae": self.pmae,
             "prmse": self.prmse,
             "n_points": self.n_points,
@@ -114,8 +124,9 @@ def evaluate(  # noqa: PLR0913 - predictions + actuals + 3 config column names +
     """Return the full standardized :class:`Evaluation` for ``predictions`` vs ``actuals``.
 
     Computes aggregate ``mae``, ``rmse``, ``smape`` (percent, guarded), ``quantile_loss`` (mean
-    pinball loss across ``quantiles``), the demand-normalized ``pmae``/``prmse``, and ``n_points`` —
-    plus a ``per_series`` breakdown (the same metrics grouped by series, sorted by series name).
+    pinball loss across ``quantiles``), the statmike-parity ``mape``/``mse``, the demand-normalized
+    ``pmae``/``prmse``, and ``n_points`` — plus a ``per_series`` breakdown (the same metrics grouped
+    by series, sorted by series name).
     ``mae``/``rmse``/``n_points`` match :func:`point_metrics` exactly. ``predictions`` must carry
     the standardized ``qXX`` quantile columns for the requested ``quantiles`` (every backend emits
     them). Inner-joined on (series, date); raises if the overlap is empty.
@@ -211,16 +222,30 @@ def _summary(merged: "pd.DataFrame", quantiles: list[float]) -> dict[str, float]
     # reads as a fraction of typical volume (robust to zero-fill days — an aggregate ratio, not a
     # per-row divide). Guarded like BigQuery's SAFE_DIVIDE: a zero denominator yields NaN, not inf.
     rmse = float(np.sqrt(np.mean(np.square(error))))
+    mse = float(np.mean(np.square(error)))
     actual_sum = float(np.sum(actual))
     actual_mean = float(np.mean(actual))
     pmae = float(np.sum(np.abs(error))) / actual_sum if actual_sum != 0.0 else float("nan")
     prmse = rmse / actual_mean if actual_mean != 0.0 else float("nan")
+
+    # Classic MAPE (statmike-parity): mean of |error| / actual as a raw ratio, replicating BigQuery
+    # ``AVG(SAFE_DIVIDE(ABS(diff), actual))`` — points with a zero actual divide to NULL and are
+    # DROPPED from the mean (not counted). WARNING: this makes MAPE's denominator smaller than
+    # ``n_points`` whenever zero-actual days exist (this dataset zero-fills), so MAPE is *not*
+    # comparable across backends as if it shared a support — that is exactly what the guarded sMAPE
+    # is for. Provided only to line up with the statmike reference notebook's SQL metrics.
+    nonzero = actual != 0.0
+    mape = (
+        float(np.mean(np.abs(error[nonzero]) / actual[nonzero])) if nonzero.any() else float("nan")
+    )
 
     return {
         "mae": float(np.mean(np.abs(error))),
         "rmse": rmse,
         "smape": float(np.mean(smape) * 100.0),
         "quantile_loss": quantile_loss,
+        "mape": mape,
+        "mse": mse,
         "pmae": pmae,
         "prmse": prmse,
         "n_points": float(len(merged)),
