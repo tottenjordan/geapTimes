@@ -23,9 +23,12 @@ from geaptimes.models.base import (
     SERIES_COLUMN,
     quantile_column,
 )
+from geaptimes.utils.logger import get_logger
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     import pandas as pd
+
+logger = get_logger(__name__)
 
 _ACTUAL_COLUMN = "actual"
 
@@ -159,6 +162,22 @@ def _merge(  # noqa: PLR0913 - predictions + actuals + 3 config column names + v
     if merged.empty:
         msg = "no overlapping (series, date) keys between predictions and actuals"
         raise ValueError(msg)
+
+    # Partial-overlap visibility: an inner join silently drops prediction rows that found no actual
+    # (and actual rows with no prediction). Scoring then runs over a smaller support than either
+    # side — loud enough to matter for cross-backend comparability, so log it with the counts.
+    dropped_preds = len(preds) - len(merged)
+    dropped_acts = len(act) - len(merged)
+    if dropped_preds or dropped_acts:
+        logger.warning(
+            "partial overlap: scored over %d of %d prediction rows and %d actual rows "
+            "(%d predictions and %d actuals had no (series, date) match)",
+            len(merged),
+            len(preds),
+            len(act),
+            dropped_preds,
+            dropped_acts,
+        )
     return merged
 
 

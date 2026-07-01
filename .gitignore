@@ -14,7 +14,8 @@ dist/
 .env
 .env.*
 *.key
-.secrets.baseline
+# NOTE: .secrets.baseline is intentionally committed — it is the detect-secrets audit
+# baseline (a manifest of reviewed non-secrets), not a secret itself.
 
 # Tooling caches
 .ruff_cache/

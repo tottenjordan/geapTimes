@@ -158,11 +158,17 @@ custom `@dsl.component` shells, by a deliberate split. Follow this rule when add
 
 - Hooks are defined in `.pre-commit-config.yaml` but are **not active** until installed:
   `uv run pre-commit install`. Run on demand with `uv run pre-commit run --all-files`.
+- **Ruff** (lint `--fix` + format) and **core file hygiene** (trailing whitespace, EOF, YAML/TOML
+  checks, merge-conflict + large-file guards) are active.
+- **Security hooks** (from the `modern-python` skill):
+  - **`detect-secrets`** — active; fails on any new secret not in `.secrets.baseline`. Refresh the
+    baseline with `uv run detect-secrets scan > .secrets.baseline` and review before committing.
+  - **`shellcheck`**, **`actionlint`**, **`zizmor`** — configured and pinned but **dormant**: there
+    are no shell scripts or `.github/workflows/` to lint yet, so they skip (`no files to check`).
+    They fire automatically the moment a matching target lands — no config scramble at that point.
 
 ## Deferred / backlog (not yet adopted)
 
-- Security pre-commit hooks (detect-secrets, shellcheck, actionlint, zizmor) from the
-  `modern-python` skill are deferred; revisit before any public release.
 - **Optional quantile forecasting (Stage 5).** Quantiles are currently always emitted
   (`QUANTILES = [0.1, 0.3, 0.5, 0.7, 0.9]`), which forces AutoML's `optimization_objective` to
   `minimize-quantile-loss` and bakes the `qXX` columns into every prediction frame. Make this a

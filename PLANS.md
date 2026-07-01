@@ -19,7 +19,7 @@ Status legend: `pending` · `in progress` · `done` · `blocked`
 | 2 | Model Factory & Forecaster Abstractions | done |
 | 3 | Experiment Tracking & DOE Framework | done |
 | 4 | Managed Pipelines & Cloud Orchestration | done |
-| 5 | Standardized Evaluation & Entry Point | in progress |
+| 5 | Standardized Evaluation & Entry Point | done |
 
 **Stage 2** — `src/geaptimes/models/`: `base.py` (ABC), `factory.py`, `automl.py`,
 `timesfm.py` (CPU/GPU), `bqml.py`; local TimesFM inference demo.
@@ -32,7 +32,7 @@ container (Model Garden → endpoint); side-by-side comparison DAG.
 
 ---
 
-## Tier 2 — Stage 5 (Standardized Evaluation & Entry Point) — ACTIVE
+## Tier 2 — Stage 5 (Standardized Evaluation & Entry Point) — COMPLETE
 
 Approved 2026-06-30; snapshot `docs/plans/006_stage-5-standardized-evaluation-and-entry-point.md`.
 Delivers the standardized evaluation suite (MAE / RMSE / **sMAPE** / **quantile loss** + per-series
@@ -92,6 +92,31 @@ the pipeline scorer live — `NaN` on the pre-5.2 06-26 runs, populated now. **G
 submit failed because the runtime image predated 5.4 — a component rejected the unknown
 `reuse_endpoint` field (`extra=forbid`); a schema change needs an image rebuild (Cloud Build
 `80355d6b`, digest `cc3a5c00…`) before any live run. Offline gate green (218 passed).
+
+### Post-Stage-5 — eval-metric comparability audit + security hooks (2026-07-01)
+
+Snapshot `docs/plans/007_post-stage5-eval-audit-and-tooling.md`. Two independent workstreams off the
+Stage-5 backlog, prompted by "AutoML eval metrics haven't looked comparable" + backlog #3.
+
+| WS | Item | Status | Commit |
+|----|------|--------|--------|
+| A | Eval-metric comparability audit + hardening (`comparison.py` n_points column + parity `warnings` + NaN-safe ranking; `metrics._merge` partial-overlap WARNING; tests; `docs/notes/automl-eval-metric-comparability.md`) | done | `d02f044` |
+| B | Backlog #3 modern-python security hooks (`detect-secrets` active + committed `.secrets.baseline`; `shellcheck`/`actionlint`/`zizmor` pinned but dormant; `CODE_STANDARDS.md`) | done | `3c5c737` |
+
+- **Audit conclusion (WS A):** the shared scorer is structurally fair — every backend funnels into one
+  `evaluate()` (inner join on `(series, date)` vs TEST actuals) → `rank_backends`. Confirmed live that
+  AutoML scored over `n_points=308`, **identical** to TimesFM/BQML → **no scoring/alignment bug**; the
+  AutoML MAE gap (142 vs 78–85) is real underperformance at the floor budget. The hardening makes
+  non-comparability *loud* (differing point counts warn; `n_points` on the table; NaN can't corrupt the
+  sort) rather than changing any metric value. **Still open:** AutoML's full sMAPE/quantile-loss suite
+  has **never** been produced live (all successful AutoML runs predate the 5.2 scorer; 5.5 ran
+  `--disable-automl`) — a full 3-backend confirmation run (~2.5 h + AutoML budget) would close it, offered
+  separately, not required by A/B.
+- **Backlog dispositions (declined this session):** **#2 `dsl.ParallelFor`** — deferred; the backends
+  are a heterogeneous compile-time loop, reserve ParallelFor for a homogeneous inner axis (DOE/backtest
+  windows); rationale `docs/notes/pipeline-parallelfor-deferred.md`. **#4 AutoML tabular workflow /
+  `AutoMLForecastingTrainingJobRunOp`** — held; far costlier than our locked floor-budget single job and
+  fragments the AutoML logic, and the preflight already de-risks the raw SDK call.
 
 ---
 

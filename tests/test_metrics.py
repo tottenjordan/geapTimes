@@ -1,5 +1,7 @@
 """Offline tests for the point-metric helper and the Stage 5 standardized eval suite."""
 
+import logging
+
 import pandas as pd
 import pytest
 
@@ -80,6 +82,28 @@ def test_empty_overlap_raises() -> None:
     actuals = _actuals(["s"], ["2019-01-01"], [10.0])
     with pytest.raises(ValueError, match="no overlapping"):
         _metrics(preds, actuals)
+
+
+# --- partial-overlap visibility (A3) -------------------------------------------------------
+
+
+def test_partial_overlap_logs_warning(caplog: pytest.LogCaptureFixture) -> None:
+    # two forecast dates, only one has a matching actual -> a prediction row is dropped.
+    preds = _preds(["s", "s"], ["2018-05-18", "2018-05-19"], [10.0, 10.0])
+    actuals = _actuals(["s"], ["2018-05-18"], [10.0])
+    with caplog.at_level(logging.WARNING, logger="geaptimes.experiment.metrics"):
+        out = _metrics(preds, actuals)
+    assert out["n_points"] == 1.0
+    assert "partial overlap" in caplog.text
+    assert "1 predictions" in caplog.text  # one prediction row had no matching actual
+
+
+def test_full_overlap_logs_no_warning(caplog: pytest.LogCaptureFixture) -> None:
+    preds = _preds(["s", "s"], ["2018-05-18", "2018-05-19"], [10.0, 12.0])
+    actuals = _actuals(["s", "s"], ["2018-05-18", "2018-05-19"], [12.0, 12.0])
+    with caplog.at_level(logging.WARNING, logger="geaptimes.experiment.metrics"):
+        _metrics(preds, actuals)
+    assert "partial overlap" not in caplog.text
 
 
 # --- evaluate (Stage 5 suite) --------------------------------------------------------------

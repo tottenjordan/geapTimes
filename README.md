@@ -154,9 +154,9 @@ geapTimes/
   [`ARIMA_PLUS_XREG` model syntax](https://docs.cloud.google.com/bigquery/docs/reference/standard-sql/bigqueryml-syntax-create-time-series) ·
   [multivariate forecasting tutorial](https://docs.cloud.google.com/bigquery/docs/arima-plus-xreg-single-time-series-forecasting-tutorial)
 - **TimesFM 2.5** —
-  
+
   - [GEAP Model Card](https://pantheon.corp.google.com/agent-platform/publishers/google/model-garden/timesfm?e=13802955&mods=-ai_platform_fake_service,-ai_platform_staging_service&project=hybrid-vertex)
-  - [HuggingFace Model Card](https://huggingface.co/google/timesfm-2.5-200m-pytorch) 
+  - [HuggingFace Model Card](https://huggingface.co/google/timesfm-2.5-200m-pytorch)
   ·
   [GitHub repo](https://github.com/google-research/timesfm)
 - **Vertex AI Experiments** (run tracking / params / metrics) —

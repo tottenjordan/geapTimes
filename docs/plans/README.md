@@ -26,3 +26,4 @@ at the plan-approval (ExitPlanMode) gate, frozen at approval time.
 - `004_stage-4-managed-pipelines-and-cloud-orchestration.md`
 - `005_stage-4-redesign-train-inference-split.md`
 - `006_stage-5-standardized-evaluation-and-entry-point.md`
+- `007_post-stage5-eval-audit-and-tooling.md`
