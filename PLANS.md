@@ -47,7 +47,7 @@ teardown guard); the **optional-quantiles** switch stays in the backlog (`CODE_S
 | 5.2 | Unify: wire `evaluate()` into `runner.py` + `score_and_track_step`; shared `rank_backends` helper for `compare_backends` Markdown ranking | done | `7244b3c` |
 | 5.3 | `scripts/run_experiment.py` CLI — argparse over `run_experiment` (`--config`, `--enable/--disable-automl`, `--dry-run`), RunRecord table + comparison report | done | `518a1b9` |
 | 5.4 | Warm endpoints + reuse: `keep_deployed` warm mode, `find_reusable_endpoint_step` (fingerprint = sha256(image **digest** + serving env) label lookup), DAG reuse branch, "only tear down what this run created" guard | done | `a2f5e1f` |
-| 5.5 | Offline gate + cheap `--disable-automl` live run (warm deploy → reuse → guarded teardown + unified richer metrics live); `docs/notes/`; **STOP** | pending | — |
+| 5.5 | Offline gate + cheap `--disable-automl` live run (warm deploy → reuse → guarded teardown + unified richer metrics live); `docs/notes/`; **STOP** | done | `1d0fb7d` |
 
 ### Stage 5 design notes
 
@@ -77,6 +77,21 @@ before the gate (the `keep` label is now stamped whenever `keep_deployed`, **ind
 mode**, so a warm endpoint created without reuse is still protected from a later transient run sharing
 its display name) plus a fail-loud on an empty resolved digest. Offline gate green (218 passed).
 **Live validation deferred to 5.5.**
+
+**5.5 live validation (2026-07-01):** full writeup in
+`docs/notes/stage-5-warm-endpoint-reuse-live-run.md`. Cheap `--disable-automl` sequence on
+`hybrid-vertex`: **warm deploy** (`…20260630232242`, SUCCEEDED) left one endpoint labelled
+`fingerprint=82717760…` + `keep=true` with no teardown node emitted; **reuse** (`…20260701024425`,
+SUCCEEDED) resolved that endpoint at submit time and compiled the reuse branch
+(`endpoint-predict-by-name`, no serving lifecycle, no teardown) — predicting against the warm
+endpoint with **identical** timesfm metrics (MAE 85.51 / RMSE 113.65), proving reuse correctness;
+**guard probe** ran `teardown_serving_step` live and skipped both the `keep=true` endpoint and model
+(destructive-regression guard confirmed); **cleanup** deleted both by resource name. The unified
+richer suite (sMAPE 39.26 / quantile loss 31.30 for timesfm; 42.66 / 30.27 for bqml) flowed through
+the pipeline scorer live — `NaN` on the pre-5.2 06-26 runs, populated now. **Gotcha:** the first
+submit failed because the runtime image predated 5.4 — a component rejected the unknown
+`reuse_endpoint` field (`extra=forbid`); a schema change needs an image rebuild (Cloud Build
+`80355d6b`, digest `cc3a5c00…`) before any live run. Offline gate green (218 passed).
 
 ---
 
