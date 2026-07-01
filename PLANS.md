@@ -127,7 +127,9 @@ Stage-5 backlog, prompted by "AutoML eval metrics haven't looked comparable" + b
   compare payload carried only the four ranking metrics, so `n_points`/`pmae`/`prmse` never reached
   `rank_backends` in the live pipeline (WS-A's `n_points` column + parity check were silently NaN
   there; only the offline CLI worked). Payload now complete → **requires a runtime-image rebuild
-  before the next live run** (components run baked code).
+  before the next live run** (components run baked code). **Confirmed live** (`...20260701111422`,
+  image `sha256:1c110c58…`, 19/19 SUCCEEDED): `ranking.md` now shows `pmae`/`prmse`/`n_points` with
+  308-parity (no warning); winner bqml_arima_xreg (pmae 0.27 vs timesfm 0.30 vs automl 0.51).
 - **Backlog dispositions (declined this session):** **#2 `dsl.ParallelFor`** — deferred; the backends
   are a heterogeneous compile-time loop, reserve ParallelFor for a homogeneous inner axis (DOE/backtest
   windows); rationale `docs/notes/pipeline-parallelfor-deferred.md`. **#4 AutoML tabular workflow /

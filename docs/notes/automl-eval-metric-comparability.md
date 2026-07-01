@@ -102,6 +102,22 @@ passes full metric dicts). Fixed by adding `pmae`/`prmse`/`n_points` to the comp
 metrics (avoids `NaN` in the artifact). The `n_points` parity check is now actually functional in the
 pipeline. **Requires a runtime-image rebuild before the next live run** (components run baked code).
 
+**Confirmed live (2026-07-01, `...20260701111422`, image `sha256:1c110c58…`, all 19 tasks
+SUCCEEDED):** the rendered `ranking.md` artifact now carries the `pmae`/`prmse`/`n_points` columns,
+all three backends at `n_points=308` (parity → no warning), and the ExperimentRuns log `pmae`/`prmse`
+alongside the ranking metrics. Live table (winner bqml_arima_xreg):
+
+| rank | model | mae | rmse | smape | quantile_loss | pmae | prmse | n_points |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | bqml_arima_xreg | 77.72 | 101.72 | 42.66 | 30.27 | 0.2733 | 0.3576 | 308 |
+| 2 | timesfm | 85.51 | 113.65 | 39.26 | 31.30 | 0.3007 | 0.3996 | 308 |
+| 3 | automl | 144.62 | 184.41 | 62.18 | 62.48 | 0.5085 | 0.6484 | 308 |
+
+pMAE reads directly: BQML's error is ~27% of average daily demand, TimesFM ~30%, AutoML ~51% — the
+same ranking as RMSE, now scale-free. (AutoML's numbers shift run-to-run — 144.6/184.4 here vs
+147.8/187.7 on the prior run — expected non-determinism at the floor budget; still last on every
+metric.)
+
 ## Takeaways
 
 - The comparison is structurally fair: one shared scorer, one inner join, identical formulas.
