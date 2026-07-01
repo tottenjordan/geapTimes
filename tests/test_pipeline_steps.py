@@ -447,6 +447,113 @@ def test_teardown_serving_step_can_keep_model() -> None:
     assert aip.model_list_filter is None  # never listed models
 
 
+# -- warm-endpoint reuse: digest + lookup + teardown guard ----------------------------------------
+class _LabeledResource:
+    """A fake endpoint/model exposing labels + delete (and deployed models, for endpoints)."""
+
+    def __init__(self, resource_name: str, labels: dict[str, str], *, deployed: int = 0) -> None:
+        self.resource_name = resource_name
+        self.labels = labels
+        self._deployed = deployed
+        self.undeployed = False
+        self.deleted = False
+
+    def list_models(self) -> list[object]:
+        return [object()] * self._deployed
+
+    def undeploy_all(self) -> None:
+        self.undeployed = True
+
+    def delete(self) -> None:
+        self.deleted = True
+
+
+class _ReuseAip:
+    """A fake aiplatform whose Endpoint/Model lists return preset labeled resources."""
+
+    def __init__(
+        self, endpoints: list[_LabeledResource], models: list[_LabeledResource] | None = None
+    ) -> None:
+        self.endpoint_filter: str | None = None
+        self.model_filter: str | None = None
+        outer = self
+
+        class Endpoint:
+            @staticmethod
+            def list(*, filter: str) -> list[_LabeledResource]:  # noqa: A002 - mirrors the SDK
+                outer.endpoint_filter = filter
+                return endpoints
+
+        class Model:
+            @staticmethod
+            def list(*, filter: str) -> list[_LabeledResource]:  # noqa: A002 - mirrors the SDK
+                outer.model_filter = filter
+                return models or []
+
+        self.Endpoint = Endpoint
+        self.Model = Model
+
+    def init(self, **_kw: object) -> None:
+        pass
+
+
+def test_resolve_image_digest_step_runs_gcloud_and_strips() -> None:
+    seen: list[list[str]] = []
+
+    def runner(args: list[str]) -> str:
+        seen.append(args)
+        return "sha256:deadbeef\n"
+
+    digest = steps.resolve_image_digest_step(_cfg(), runner=runner)
+    assert digest == "sha256:deadbeef"  # trailing newline stripped
+    # the runtime image URI is the describe target
+    assert any("geaptimes-runtime:latest" in arg for arg in seen[0])
+    assert "describe" in seen[0]
+
+
+def test_find_reusable_endpoint_step_returns_in_service_match() -> None:
+    aip = _ReuseAip(
+        endpoints=[_LabeledResource("projects/x/endpoints/warm", {"keep": "true"}, deployed=1)]
+    )
+    found = steps.find_reusable_endpoint_step(_cfg(), "feedface", aiplatform=aip)
+    assert found == "projects/x/endpoints/warm"
+    # looked up by the fingerprint + solution labels
+    filt = aip.endpoint_filter or ""
+    assert 'labels.fingerprint="feedface"' in filt
+    assert "labels.solution=" in filt
+
+
+def test_find_reusable_endpoint_step_skips_endpoint_without_deployed_model() -> None:
+    aip = _ReuseAip(
+        endpoints=[_LabeledResource("projects/x/endpoints/empty", {"keep": "true"}, deployed=0)]
+    )
+    assert steps.find_reusable_endpoint_step(_cfg(), "feedface", aiplatform=aip) == ""
+
+
+def test_find_reusable_endpoint_step_returns_empty_when_none() -> None:
+    aip = _ReuseAip(endpoints=[])
+    assert steps.find_reusable_endpoint_step(_cfg(), "feedface", aiplatform=aip) == ""
+
+
+def test_teardown_guard_skips_kept_warm_endpoint() -> None:
+    warm = _LabeledResource("projects/x/endpoints/warm", {"keep": "true"}, deployed=1)
+    transient = _LabeledResource("projects/x/endpoints/transient", {"keep": "false"}, deployed=1)
+    aip = _ReuseAip(endpoints=[warm, transient], models=[])
+    steps.teardown_serving_step(_cfg(), delete_model=False, aiplatform=aip)
+    assert warm.deleted is False  # guard: a shared warm endpoint is never torn down
+    assert warm.undeployed is False
+    assert transient.deleted is True  # the run's own transient endpoint is torn down
+
+
+def test_teardown_guard_skips_kept_warm_model() -> None:
+    warm_model = _LabeledResource("projects/x/models/warm", {"keep": "true"})
+    transient_model = _LabeledResource("projects/x/models/transient", {"keep": "false"})
+    aip = _ReuseAip(endpoints=[], models=[warm_model, transient_model])
+    steps.teardown_serving_step(_cfg(), aiplatform=aip)
+    assert warm_model.deleted is False
+    assert transient_model.deleted is True
+
+
 # -- score_and_track (shared scorer for every backend) --------------------------------------------
 def test_score_and_track_step_scores_and_tracks_served_backend() -> None:
     cfg = _cfg()

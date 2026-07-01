@@ -18,48 +18,23 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from geaptimes.experiment.overrides import with_automl_disabled, with_automl_enabled
 from geaptimes.pipelines.compile import compile_pipeline
 from geaptimes.pipelines.config import (
     pipeline_job_display_name,
     pipeline_root,
     resource_labels,
+    serving_fingerprint,
 )
+from geaptimes.pipelines.steps import find_reusable_endpoint_step, resolve_image_digest_step
 from geaptimes.schemas import ExperimentConfig
 from geaptimes.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-
-def with_automl_enabled(cfg: ExperimentConfig) -> ExperimentConfig:
-    """Return a re-validated copy of *cfg* with the AutoML backend enabled.
-
-    Flips ``enabled: true`` on the existing AutoML model, or appends a default AutoML model if the
-    config has none. The input config is never mutated.
-    """
-    data = cfg.model_dump()
-    models = data["models"]
-    for model in models:
-        if model["params"]["type"] == "automl":
-            model["enabled"] = True
-            break
-    else:
-        models.append({"name": "automl", "enabled": True, "params": {"type": "automl"}})
-    return ExperimentConfig.model_validate(data)
-
-
-def with_automl_disabled(cfg: ExperimentConfig) -> ExperimentConfig:
-    """Return a re-validated copy of *cfg* with the AutoML backend disabled.
-
-    The mirror of :func:`with_automl_enabled`: flips ``enabled: false`` on every AutoML model so a
-    cheap pipeline test run skips the long, billable AutoML training (the rest of the DAG finishes
-    in minutes). A config with no AutoML model is returned unchanged. The input config is never
-    mutated.
-    """
-    data = cfg.model_dump()
-    for model in data["models"]:
-        if model["params"]["type"] == "automl":
-            model["enabled"] = False
-    return ExperimentConfig.model_validate(data)
+# Re-exported (moved to geaptimes.experiment.overrides so the in-process runner CLI can reuse them
+# without importing the kfp/pipeline stack); kept importable here for back-compat.
+__all__ = ["with_automl_disabled", "with_automl_enabled"]
 
 
 def with_data_rebuild_forced(cfg: ExperimentConfig) -> ExperimentConfig:
@@ -160,6 +135,34 @@ def _default_template_path() -> str:
     return str(Path(tempfile.mkdtemp(prefix="geaptimes-pipeline-")) / "comparison_pipeline.yaml")
 
 
+def _resolve_reuse(cfg: ExperimentConfig, aip: Any) -> tuple[str, str]:  # noqa: ANN401 - SDK module
+    """Resolve warm-endpoint reuse at submit time: ``(reused_endpoint, serving_fingerprint)``.
+
+    When ``serving.reuse_endpoint`` is on (endpoint mode only) this resolves the runtime image's
+    Artifact Registry digest, computes the serving fingerprint, and looks up a fingerprint-matching
+    warm endpoint -- a live call sequence, like the AutoML preflight, run once per submit. A
+    non-empty ``reused_endpoint`` makes :func:`build_pipeline` take the reuse branch (no deploy, no
+    teardown); the fingerprint is always returned so the fresh path can stamp the reuse labels. When
+    reuse is off, returns ``("", "")`` and makes no cloud calls.
+    """
+    serving = cfg.pipeline.serving
+    if not (serving.reuse_endpoint and serving.mode == "endpoint"):
+        return "", ""
+    digest = resolve_image_digest_step(cfg)
+    if not digest:
+        # Fail loud: an empty digest would degrade the fingerprint to hashing only the serving env
+        # (no image discrimination), so a stale image could be reused. Better to stop the submit.
+        msg = "could not resolve runtime image digest for the serving fingerprint"
+        raise RuntimeError(msg)
+    fingerprint = serving_fingerprint(cfg, digest)
+    reused_endpoint = find_reusable_endpoint_step(cfg, fingerprint, aiplatform=aip)
+    if reused_endpoint:
+        logger.info("reuse: warm endpoint %s (fingerprint %s)", reused_endpoint, fingerprint)
+    else:
+        logger.info("reuse: no warm endpoint for fingerprint %s; deploying fresh", fingerprint)
+    return reused_endpoint, fingerprint
+
+
 def submit_pipeline(
     cfg: ExperimentConfig,
     *,
@@ -178,7 +181,8 @@ def submit_pipeline(
     """
     aip = aiplatform or _lazy_aiplatform()
     path = str(template_path) if template_path is not None else _default_template_path()
-    compile_pipeline(cfg, path)
+    reused_endpoint, fingerprint = _resolve_reuse(cfg, aip)
+    compile_pipeline(cfg, path, reused_endpoint=reused_endpoint, serving_fingerprint=fingerprint)
     aip.init(
         project=cfg.project.id,
         location=cfg.project.region,

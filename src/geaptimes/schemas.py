@@ -232,11 +232,15 @@ class ServingConfig(_Base):
 
     ``mode`` selects an online endpoint (default) or a batch-prediction job. ``keep_deployed``
     is the cost switch: ``False`` (default) tears the endpoint down after artifacts are saved;
-    ``True`` leaves it running.
+    ``True`` leaves it running. ``reuse_endpoint`` opts into fingerprint-based reuse of an existing
+    warm endpoint (looked up at submit time) instead of registering + deploying a fresh one; it is
+    only meaningful in ``endpoint`` mode and pairs with ``keep_deployed`` (a warm run deploys once,
+    later runs reuse it). See ``docs/notes/timesfm-endpoint-reuse-design.md``.
     """
 
     mode: Literal["endpoint", "batch"] = "endpoint"
     keep_deployed: bool = False
+    reuse_endpoint: bool = False
     machine_type: str = "n1-standard-4"
     min_replica_count: int = 1
     max_replica_count: int = 1

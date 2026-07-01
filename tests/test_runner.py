@@ -129,7 +129,9 @@ def test_single_point_single_model_run() -> None:
     assert rec.run_name == "timesfm-base-20260102-030405"
     assert rec.model == "timesfm"
     assert rec.metrics["mae"] == 1.0  # errors -2, 0
-    assert rec.metadata == {"device": "cpu"}
+    # forecaster metadata is preserved; the per-series breakdown from the eval suite is attached.
+    assert rec.metadata["device"] == "cpu"
+    assert [row["series"] for row in rec.metadata["per_series"]] == ["s"]
     assert rec.artifact_uri == "gs://b/experiments/exp/timesfm-base-20260102-030405"
     assert built[0].fitted  # fit() was called
     # tracker lifecycle + logging happened

@@ -18,8 +18,8 @@ Status legend: `pending` · `in progress` · `done` · `blocked`
 | 1 | Data Architecture & Config Schema | done |
 | 2 | Model Factory & Forecaster Abstractions | done |
 | 3 | Experiment Tracking & DOE Framework | done |
-| 4 | Managed Pipelines & Cloud Orchestration | in progress |
-| 5 | Standardized Evaluation & Entry Point | pending |
+| 4 | Managed Pipelines & Cloud Orchestration | done |
+| 5 | Standardized Evaluation & Entry Point | in progress |
 
 **Stage 2** — `src/geaptimes/models/`: `base.py` (ABC), `factory.py`, `automl.py`,
 `timesfm.py` (CPU/GPU), `bqml.py`; local TimesFM inference demo.
@@ -32,7 +32,70 @@ container (Model Garden → endpoint); side-by-side comparison DAG.
 
 ---
 
-## Tier 2 — Stage 4 (Managed Pipelines & Cloud Orchestration) — ACTIVE
+## Tier 2 — Stage 5 (Standardized Evaluation & Entry Point) — ACTIVE
+
+Approved 2026-06-30; snapshot `docs/plans/006_stage-5-standardized-evaluation-and-entry-point.md`.
+Delivers the standardized evaluation suite (MAE / RMSE / **sMAPE** / **quantile loss** + per-series
+breakdown) over identical backtests from **one** metric implementation shared by the offline runner
+and the pipeline scorer, plus the polished `scripts/run_experiment.py` entry point. One deferred item
+is folded in by user decision: **warm-endpoint reuse** (`keep_deployed` + fingerprint-label reuse +
+teardown guard); the **optional-quantiles** switch stays in the backlog (`CODE_STANDARDS.md`).
+
+| # | Item | Status | Commit |
+|---|------|--------|--------|
+| 5.1 | `experiment/metrics.py` — eval suite: guarded sMAPE, pinball/quantile loss over `QUANTILES`, per-series breakdown, `evaluate()` aggregator (keep `point_metrics`) | done | `5d71aa8` |
+| 5.2 | Unify: wire `evaluate()` into `runner.py` + `score_and_track_step`; shared `rank_backends` helper for `compare_backends` Markdown ranking | done | `7244b3c` |
+| 5.3 | `scripts/run_experiment.py` CLI — argparse over `run_experiment` (`--config`, `--enable/--disable-automl`, `--dry-run`), RunRecord table + comparison report | done | `518a1b9` |
+| 5.4 | Warm endpoints + reuse: `keep_deployed` warm mode, `find_reusable_endpoint_step` (fingerprint = sha256(image **digest** + serving env) label lookup), DAG reuse branch, "only tear down what this run created" guard | done | `a2f5e1f` |
+| 5.5 | Offline gate + cheap `--disable-automl` live run (warm deploy → reuse → guarded teardown + unified richer metrics live); `docs/notes/`; **STOP** | done | `1d0fb7d` |
+
+### Stage 5 design notes
+
+- **sMAPE over MAPE** — targets are daily station counts with zero-fill; raw MAPE divides by ~0, so
+  symmetric MAPE with a small-denominator guard (documented) is the interpretable choice.
+- **One metric implementation** — the suite lives in `metrics.py` and is consumed by both the offline
+  `runner.py` and the pipeline `score_and_track_step`/`compare_backends`, so "identical backtests" is
+  enforced by construction, not convention.
+- **One live run, not two** — warm-endpoint reuse only touches TimesFM serving, so a cheap
+  `--disable-automl` run validates both the reuse path and the unified richer scorer live; AutoML's
+  richer-metrics path is covered offline + by the already-proven train/infer split.
+- **Reviews-as-gates** ([[sdd-reviews-as-gates]]) on 5.4 — the teardown guard + concurrency are the
+  riskiest surface (deleting a shared warm endpoint is a destructive regression).
+
+**5.4 implementation notes (2026-06-30, `a2f5e1f`):** snapshot `docs/plans/006_*` covers the design;
+key build decisions: (1) reuse is resolved **at submit time** (a live call sequence like the AutoML
+preflight) and the DAG **branches at compile time** — not a runtime `dsl.If` — matching the recorded
+"branch at compile time, the YAML shows exactly what executes" convention; `build_pipeline(cfg, *,
+reused_endpoint, serving_fingerprint)` are compile-time inputs, not pipeline params. (2) Digest
+resolution shells `gcloud` behind an injected runner (the 4.7 injectable-gcloud precedent), not a new
+AR SDK dep. (3) Reuse predict is a small sibling component `endpoint_predict_by_name` (a plain string
+param), avoiding the importer-URI semantics that bit us in P2.7a. **Two teardown guards:** primary —
+no teardown task is emitted on a reuse run (`needs_teardown` gate); secondary —
+`teardown_serving_step` skips any endpoint/model labelled `keep=true`. Reviews-as-gates
+([[sdd-reviews-as-gates]]): code-quality reviewer APPROVE-WITH-NITS; fixed the one MEDIUM finding
+before the gate (the `keep` label is now stamped whenever `keep_deployed`, **independent of reuse
+mode**, so a warm endpoint created without reuse is still protected from a later transient run sharing
+its display name) plus a fail-loud on an empty resolved digest. Offline gate green (218 passed).
+**Live validation deferred to 5.5.**
+
+**5.5 live validation (2026-07-01):** full writeup in
+`docs/notes/stage-5-warm-endpoint-reuse-live-run.md`. Cheap `--disable-automl` sequence on
+`hybrid-vertex`: **warm deploy** (`…20260630232242`, SUCCEEDED) left one endpoint labelled
+`fingerprint=82717760…` + `keep=true` with no teardown node emitted; **reuse** (`…20260701024425`,
+SUCCEEDED) resolved that endpoint at submit time and compiled the reuse branch
+(`endpoint-predict-by-name`, no serving lifecycle, no teardown) — predicting against the warm
+endpoint with **identical** timesfm metrics (MAE 85.51 / RMSE 113.65), proving reuse correctness;
+**guard probe** ran `teardown_serving_step` live and skipped both the `keep=true` endpoint and model
+(destructive-regression guard confirmed); **cleanup** deleted both by resource name. The unified
+richer suite (sMAPE 39.26 / quantile loss 31.30 for timesfm; 42.66 / 30.27 for bqml) flowed through
+the pipeline scorer live — `NaN` on the pre-5.2 06-26 runs, populated now. **Gotcha:** the first
+submit failed because the runtime image predated 5.4 — a component rejected the unknown
+`reuse_endpoint` field (`extra=forbid`); a schema change needs an image rebuild (Cloud Build
+`80355d6b`, digest `cc3a5c00…`) before any live run. Offline gate green (218 passed).
+
+---
+
+## Tier 2 — Stage 4 (Managed Pipelines & Cloud Orchestration) — COMPLETE
 
 The Stage 3 in-process `run_experiment` loop is lifted into a managed **KFP v2 pipeline** on Vertex
 AI, and a custom-container **TimesFM** model is served via an online **endpoint** (default) or
@@ -56,7 +119,7 @@ evaluation + the polished CLI remain in Stage 5.
 | 4.6 | `pipelines/{components,pipeline,compile}.py` — KFP components + comparison DAG + compile; add `kfp` | done | `82cafda` |
 | 4.7 | `pipelines/container/{Dockerfile,cloudbuild.yaml}` + `setup_gcp.py` AR repo + `requirements.txt` | done | `2802b12` |
 | 4.8 | `pipelines/submit.py` — submit `PipelineJob` + `--enable-automl` override | done | `a8303ff` |
-| 4.9 | Live comparison run on `hybrid-vertex` (TimesFM + BQML + AutoML floor) + notes | pending | — |
+| 4.9 | Live comparison run on `hybrid-vertex` (TimesFM + BQML + AutoML floor) + notes | done (via redesign P2.7b) | `0df799c` |
 
 ### 4.1 Schema + config
 `ArtifactRegistryConfig` + `ServingConfig` (`mode: endpoint\|batch`, `keep_deployed`, machine/replica
@@ -224,7 +287,7 @@ rationale: `docs/notes/pipeline-parallelfor-deferred.md`.
 
 ---
 
-## Tier 2 — Stage 4 Redesign (Train/Inference Split + Hybrid GCPC) — ACTIVE
+## Tier 2 — Stage 4 Redesign (Train/Inference Split + Hybrid GCPC) — COMPLETE
 
 Approved 2026-06-26; snapshot `docs/plans/005_stage-4-redesign-train-inference-split.md`. Splits
 every backend into **train → infer → score** (trained model passed by reference, so an infer-side

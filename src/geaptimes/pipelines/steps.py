@@ -7,7 +7,7 @@ module, BigQuery readers, GCS IO) is an injected seam with a lazy live default, 
 unit-tests offline with fakes — the same discipline as the Stage 2/3 forecasters and tracker.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from geaptimes.data.queries import (
@@ -16,7 +16,8 @@ from geaptimes.data.queries import (
     build_source_query,
     build_train_query,
 )
-from geaptimes.experiment.metrics import point_metrics
+from geaptimes.experiment.comparison import Comparison, rank_backends
+from geaptimes.experiment.metrics import evaluate
 from geaptimes.experiment.runner import (
     RunRecord,
     _default_actuals_loader,
@@ -36,8 +37,11 @@ from geaptimes.models.base import (
 from geaptimes.models.factory import ForecastFactory
 from geaptimes.naming import config_fingerprint_hash, table_names
 from geaptimes.pipelines.config import (
+    image_uri,
+    is_kept_warm,
     pipeline_root,
     resource_labels,
+    reusable_endpoint_filter,
     timesfm_context_len,
     timesfm_endpoint_display_name,
     timesfm_model_display_name,
@@ -360,13 +364,14 @@ def score_and_track_step(  # noqa: PLR0913 - cfg + name + frame + injected seams
     data = cfg.data
     run_name = _safe_run_name(f"{model_name}-{clock().strftime('%Y%m%d-%H%M%S')}")
     actuals = load_actuals(cfg)
-    metrics = point_metrics(
+    evaluation = evaluate(
         predictions,
         actuals,
         series_col=data.series_column,
         time_col=data.time_column,
         target_col=data.target_column,
     )
+    metrics = evaluation.summary()
     logger.info("scoring backend %s as %s", model_name, run_name)
     artifact_uri = ""
     if tracker is not None:
@@ -379,10 +384,70 @@ def score_and_track_step(  # noqa: PLR0913 - cfg + name + frame + injected seams
         model=model_name,
         overrides={},
         metrics=metrics,
-        metadata={},
+        metadata={"per_series": evaluation.per_series},
         artifact_uri=artifact_uri,
     )
     return BackendResult(record=record, predictions=predictions)
+
+
+def resolve_image_digest_step(
+    cfg: "ExperimentConfig",
+    *,
+    runner: "Callable[[list[str]], str] | None" = None,
+) -> str:
+    """Resolve the geapTimes runtime image's ``:latest`` tag to its Artifact Registry digest.
+
+    The serving fingerprint hashes the image *digest*, not the mutable ``:latest`` tag, so a warm
+    endpoint built from an older image is never mistaken for a current one (see
+    :func:`~geaptimes.pipelines.config.serving_fingerprint`). The digest lookup shells ``gcloud``
+    behind an injected ``runner`` -- the same injectable-gcloud pattern used for Artifact Registry
+    repo provisioning (Stage 4.7) -- so it stays offline-testable with a fake.
+    """
+    run = runner or _default_gcloud_runner
+    image = image_uri(cfg)
+    out = run(
+        [
+            "gcloud",
+            "artifacts",
+            "docker",
+            "images",
+            "describe",
+            image,
+            "--format=value(image_summary.digest)",
+        ]
+    )
+    return out.strip()
+
+
+def _default_gcloud_runner(args: list[str]) -> str:  # pragma: no cover - shells gcloud live
+    """Run a gcloud command and return its stdout (default ``runner`` for digest resolution)."""
+    import subprocess  # noqa: PLC0415 - lazy import; trusted args, list form (no shell)
+
+    result = subprocess.run(args, capture_output=True, text=True, check=True)  # noqa: S603 - trusted args
+    return result.stdout
+
+
+def find_reusable_endpoint_step(
+    cfg: "ExperimentConfig",
+    fingerprint: str,
+    *,
+    aiplatform: Any = None,  # noqa: ANN401 - external SDK module, injected for tests
+) -> str:
+    """Return the resource name of a reusable warm TimesFM endpoint, or ``""`` if none.
+
+    Looks up endpoints by the serving ``fingerprint`` label (AND ``solution=geaptimes``) and returns
+    the first one that has a deployed model -- a drop-in replacement for the register -> deploy
+    chain. An empty string means "deploy fresh". Resolved at submit time (a live call, like the
+    AutoML preflight); the ``aiplatform`` module is injected so this unit-tests offline.
+    """
+    aip = aiplatform or _lazy_aiplatform()
+    _aip_init(aip, cfg)
+    for endpoint in aip.Endpoint.list(filter=reusable_endpoint_filter(fingerprint)):
+        if endpoint.list_models():
+            logger.info("reusing warm TimesFM endpoint %s", endpoint.resource_name)
+            return endpoint.resource_name
+    logger.info("no reusable TimesFM endpoint for fingerprint %s; deploying fresh", fingerprint)
+    return ""
 
 
 def endpoint_predict_step(
@@ -477,40 +542,38 @@ def teardown_serving_step(
     must work from config alone (the exit task can't reference the endpoint resource name produced
     inside the handler). It is best-effort and idempotent: if nothing matches (batch mode, TimesFM
     disabled, or already torn down) it is a no-op, so it is safe to always run on pipeline exit.
+
+    **Teardown guard:** any endpoint/model carrying the ``keep=true`` warm label is skipped, so a
+    transient run never deletes a shared warm deployment that happens to share the (config-derived)
+    display name. This is the belt-and-suspenders to the primary guard (no teardown task is emitted
+    at all on a reuse run -- see :func:`~geaptimes.pipelines.pipeline.build_pipeline`).
     """
     aip = aiplatform or _lazy_aiplatform()
     _aip_init(aip, cfg)
     endpoint_name = timesfm_endpoint_display_name(cfg)
     for endpoint in aip.Endpoint.list(filter=f'display_name="{endpoint_name}"'):
+        if is_kept_warm(getattr(endpoint, "labels", None)):
+            logger.info("teardown guard: skip kept-warm endpoint %s", endpoint.resource_name)
+            continue
         logger.info("tearing down TimesFM endpoint %s", endpoint.resource_name)
         endpoint.undeploy_all()
         endpoint.delete()
     if delete_model:
         model_name = timesfm_model_display_name(cfg)
         for model in aip.Model.list(filter=f'display_name="{model_name}"'):
+            if is_kept_warm(getattr(model, "labels", None)):
+                logger.info("teardown guard: skip kept-warm model %s", model.resource_name)
+                continue
             logger.info("deleting TimesFM model %s", model.resource_name)
             model.delete()
 
 
-@dataclass
-class Comparison:
-    """The side-by-side comparison outcome."""
-
-    ranking: list[dict[str, Any]] = field(default_factory=list)
-    winner: str = ""
-
-
 def compare_step(results: "list[tuple[str, dict[str, float]]]") -> Comparison:
-    """Rank backends by RMSE (tie-break MAE); the lowest-error model wins."""
-    ranking: list[dict[str, Any]] = [
-        {
-            "model": name,
-            "mae": float(m.get("mae", float("inf"))),
-            "rmse": float(m.get("rmse", float("inf"))),
-        }
-        for name, m in results
-    ]
-    ranking.sort(key=lambda r: (r["rmse"], r["mae"]))
-    winner = str(ranking[0]["model"]) if ranking else ""
-    logger.info("comparison winner: %s", winner)
-    return Comparison(ranking=ranking, winner=winner)
+    """Rank backends by RMSE (tie-break MAE); the lowest-error model wins.
+
+    Thin wrapper over :func:`~geaptimes.experiment.comparison.rank_backends` so the pipeline's
+    ``compare-backends`` step and the ``run_experiment`` CLI rank backends identically.
+    """
+    comparison = rank_backends(results)
+    logger.info("comparison winner: %s", comparison.winner)
+    return comparison

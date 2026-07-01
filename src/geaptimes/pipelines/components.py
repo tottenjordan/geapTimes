@@ -32,6 +32,7 @@ class PipelineComponents:
     infer_backend: Any
     score_and_track: Any
     endpoint_predict: Any
+    endpoint_predict_by_name: Any
     batch_predict: Any
     teardown_serving: Any
     compare_backends: Any
@@ -150,17 +151,18 @@ def build_components(image: str) -> PipelineComponents:  # noqa: PLR0915, C901 -
         frame = pd.read_parquet(predictions.path)
         result = steps.score_and_track_step(cfg, model_name, frame, tracker=ExperimentTracker(cfg))
         scores = result.record.metrics
-        mae = float(scores["mae"])
-        rmse = float(scores["rmse"])
+        # The standardized suite (Stage 5): point error + sMAPE + quantile loss, computed once by
+        # the shared scorer and surfaced uniformly for every backend.
+        reported = {key: float(scores[key]) for key in ("mae", "rmse", "smape", "quantile_loss")}
         # Scalar metrics on the task itself (the system.Metrics artifact KFP renders in the Vertex
         # Pipelines UI), in addition to the Vertex ExperimentRun logged inside the step.
-        metrics.log_metric("mae", mae)
-        metrics.log_metric("rmse", rmse)
+        for key, value in reported.items():
+            metrics.log_metric(key, value)
         # Return base64(JSON), not a dict or raw JSON string. compare_backends collects these into a
         # ``list`` param, which KFP builds by *textual* placeholder substitution into the executor
         # input JSON -- a raw JSON value's quotes would break that JSON (and a dict has no
         # resolvable list-element type). base64's alphabet is both JSON- and substitution-safe.
-        payload = json.dumps({"model": result.record.model, "mae": mae, "rmse": rmse})
+        payload = json.dumps({"model": result.record.model, **reported})
         return base64.b64encode(payload.encode("utf-8")).decode("ascii")
 
     @dsl.component(base_image=image)
@@ -179,6 +181,23 @@ def build_components(image: str) -> PipelineComponents:  # noqa: PLR0915, C901 -
         # the GCPC artifact types inside the container).
         cfg = ExperimentConfig.model_validate_json(config_json)
         frame = steps.endpoint_predict_step(cfg, endpoint.metadata["resourceName"])
+        frame.to_parquet(predictions.path, index=False)
+
+    @dsl.component(base_image=image)
+    def endpoint_predict_by_name(
+        config_json: str,
+        endpoint_resource_name: str,
+        prepped: dsl.Input[dsl.Dataset],
+        predictions: dsl.Output[dsl.Dataset],
+    ) -> None:
+        from geaptimes.pipelines import steps
+        from geaptimes.schemas import ExperimentConfig
+
+        _ = prepped  # lineage edge: the online predictions read context from the prepped table
+        # Reuse branch: the endpoint resource name is a known string (a warm endpoint resolved at
+        # submit time), so there is no GCPC VertexEndpoint artifact to consume -- predict directly.
+        cfg = ExperimentConfig.model_validate_json(config_json)
+        frame = steps.endpoint_predict_step(cfg, endpoint_resource_name)
         frame.to_parquet(predictions.path, index=False)
 
     @dsl.component(base_image=image)
@@ -216,6 +235,7 @@ def build_components(image: str) -> PipelineComponents:  # noqa: PLR0915, C901 -
         import json
         from pathlib import Path
 
+        from geaptimes.experiment.comparison import render_ranking_markdown
         from geaptimes.pipelines import steps
 
         # ``rows`` are base64(JSON) strings emitted by score_and_track (see the note there).
@@ -224,12 +244,9 @@ def build_components(image: str) -> PipelineComponents:  # noqa: PLR0915, C901 -
         with Path(comparison.path).open("w", encoding="utf-8") as fh:
             json.dump({"winner": result.winner, "ranking": result.ranking}, fh, indent=2)
         # Human-readable ranking table (the system.Markdown artifact rendered in the Vertex
-        # Pipelines UI); the winner row is flagged so the outcome is legible at a glance.
-        lines = ["| rank | model | mae | rmse |", "| --- | --- | --- | --- |"]
-        for idx, row in enumerate(result.ranking, start=1):
-            flag = " (winner)" if row["model"] == result.winner else ""
-            lines.append(f"| {idx} | {row['model']}{flag} | {row['mae']:.4f} | {row['rmse']:.4f} |")
-        Path(ranking_md.path).write_text("\n".join(lines) + "\n", encoding="utf-8")
+        # Pipelines UI); the winner row is flagged and the full metric set is shown. Rendered by the
+        # shared helper so the pipeline and the run_experiment CLI produce identical reports.
+        Path(ranking_md.path).write_text(render_ranking_markdown(result), encoding="utf-8")
         return result.winner
 
     return PipelineComponents(
@@ -240,6 +257,7 @@ def build_components(image: str) -> PipelineComponents:  # noqa: PLR0915, C901 -
         infer_backend=infer_backend,
         score_and_track=score_and_track,
         endpoint_predict=endpoint_predict,
+        endpoint_predict_by_name=endpoint_predict_by_name,
         batch_predict=batch_predict,
         teardown_serving=teardown_serving,
         compare_backends=compare_backends,
