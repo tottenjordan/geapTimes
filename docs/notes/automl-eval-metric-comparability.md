@@ -151,6 +151,50 @@ scorer does not fabricate intervals). Point metrics (MAE/RMSE/sMAPE/MAPE/pMAE/pR
 apples-to-apples comparison against the other backends' mean-targeting point forecasts. The residual
 budget lever remains available separately.
 
+## Point-only NaN-sink bug + minimize-rmse live confirmation (2026-07-01)
+
+Applying the `minimize-rmse` switch surfaced a **latent NaN-handling bug** in the metric sinks. The
+first live run under the new objective (`…20260701150736`, `--no-cache`) trained and inferred AutoML
+fine (`train-backend-2` + `infer-backend-2` SUCCEEDED) but **failed at `score-and-track-2`**:
+
+```
+InvalidArgument: 400 Value for the field 'quantile_loss' is invalid.
+  Numeric values can not be NaN or Infinity.
+```
+
+Point-only AutoML reports `quantile_loss = NaN` (no quantiles produced — honest), and
+`ExperimentTracker.log_metrics` was shipping the full metric dict, NaN included, to Vertex's
+**ExperimentRun metadata service**, which rejects non-finite numbers outright. TimesFM/BQML passed
+because their `quantile_loss` is finite; only the point-only backend tripped it.
+
+**Fix (`b476abc`):** guard both metric sinks that reach a NaN-hostile layer, keep the value everywhere
+else:
+- `ExperimentTracker.log_metrics` (`src/geaptimes/experiment/tracking.py`) drops non-finite entries
+  before the Vertex call and logs a WARNING naming what it dropped.
+- the KFP `system.Metrics` UI artifact (`score_and_track` in `src/geaptimes/pipelines/components.py`)
+  logs only the **finite** ranking metrics (`math.isfinite` guard).
+- the base64 **compare payload is unchanged** — it still carries `quantile_loss=NaN`, which
+  round-trips through Python `json` and renders in the ranking table; `rank_backends` is already
+  NaN-safe, so the NaN sinks the metric without corrupting the sort. We persist honesty everywhere
+  except the two sinks that physically can't store NaN.
+
+**Confirmed live** on the rebuilt image (`sha256:0569f19f…`): run `…20260701183919`, **all 19/19
+tasks SUCCEEDED** (including `score-and-track-2`), `n_points=308` parity (no warning). The
+`minimize-rmse` objective removed the median bias as predicted:
+
+| backend | mae | rmse | smape | quantile_loss | mape | pmae | prmse | n_points |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| bqml_arima_xreg (winner) | 77.72 | 101.72 | 42.66 | 30.27 | 0.434 | 0.273 | 0.358 | 308 |
+| timesfm | 85.51 | 113.65 | 39.26 | 31.30 | 0.457 | 0.301 | 0.400 | 308 |
+| automl | 130.33 | 169.51 | 55.09 | **NaN** | 0.420 | 0.458 | 0.596 | 308 |
+
+AutoML's point metrics dropped vs the biased `minimize-quantile-loss` run: **MAE 144.6 → 130.3
+(−10%), RMSE 184.4 → 169.5 (−8%)**. It still ranks last on RMSE/MAE — the residual floor-budget gap
+(even fully debiased, RMSE was ~143), not the median bias, which is now gone. Note AutoML's **MAPE is
+actually best** (0.420): classic MAPE weights low-demand days (where the mean-targeting model now does
+well), while pMAE/pRMSE weight high-demand stations (where it lags) — exactly why MAPE is display-only
+and never a ranking key.
+
 ## Takeaways
 
 - The comparison is structurally fair: one shared scorer, one inner join, identical formulas.
