@@ -30,13 +30,29 @@ support** to the other backends. So the metric gap is **not** an alignment or de
   underperformance at the floor training budget** (AutoML Forecasting was run at its minimum node-hour
   budget for cost), not a scoring defect.
 
-### Still open: AutoML's full metric suite has never been produced live
+### Resolved: AutoML's full metric suite confirmed live (2026-07-01)
 
 sMAPE and quantile-loss showed as `NaN` for AutoML in older comparison tables only because **every
-successful AutoML run predates the Stage 5.2 scorer** (which added sMAPE + quantile-loss). The 5.5
-live run used `--disable-automl`, so AutoML has **never** been scored by the current suite live. A
-full 3-backend confirmation run (~2.5 h + AutoML budget) would close this; it is offered separately
-and is **not** required by the hardening below.
+successful AutoML run predated the Stage 5.2 scorer** (which added sMAPE + quantile-loss). The 5.5
+live run used `--disable-automl`, so AutoML had never been scored by the current suite live.
+
+The full 3-backend confirmation run
+(`geaptimes-comparison-top25-h14-t14-v14-20260701040623`, `--no-cache`, all 19 tasks SUCCEEDED)
+closed this. All three backends scored over **`n_points = 308`** — exact parity — and AutoML's full
+suite was populated live for the first time:
+
+| backend | rmse | mae | sMAPE | quantile_loss | n_points |
+| --- | --- | --- | --- | --- | --- |
+| bqml_arima_xreg (winner) | 101.72 | 77.72 | 42.66 | 30.27 | 308 |
+| timesfm | 113.65 | 85.51 | 39.26 | 31.30 | 308 |
+| automl | 187.71 | 147.78 | 63.93 | 65.11 | 308 |
+
+The AutoML gap holds across **every** metric (not just MAE), reconfirming real floor-budget
+underperformance rather than a scoring artefact. Because `n_points` is identical across backends, the
+new parity check correctly emits **no** warning — the happy-path behaviour of the WS-A hardening,
+verified live. `teardown-serving` succeeded, so the TimesFM endpoint + uploaded served model were
+torn down (`keep_deployed=false`); AutoML's registry model is a batch-predict training artefact and
+is not endpoint-governed.
 
 ## Comparability-integrity gaps found (and closed)
 
@@ -63,11 +79,34 @@ Additionally, `_merge` now **logs a WARNING on partial overlap** (counts of pred
 that found no `(series, date)` match). The empty-overlap `ValueError` is unchanged, and metric values
 themselves are unchanged — this is pure visibility.
 
+## Follow-on: demand-normalized metrics + payload completeness (2026-07-01)
+
+Comparing our scorer to statmike's `Vertex AI AutoML Forecasting - Python client` SQL (its "Review
+Custom Metrics with SQL" cells) confirmed **MAE and RMSE are formula-identical** (`AVG(ABS(diff))`,
+`SQRT(AVG(POW(diff,2)))`). Two deliberate divergences remain: he uses classic MAPE
+(`AVG(SAFE_DIVIDE(ABS(diff), actual))`, which silently drops zero-actual days via `NULL` — the
+denominator trap we avoid), and he has no pinball/quantile loss (we do). We adopted the one thing his
+SQL had that we lacked — **demand-normalized error**:
+
+- `pmae = SUM(|error|) / SUM(actual)` and `prmse = RMSE / AVG(actual)` — MAE/RMSE as a fraction of
+  typical demand, so absolute quality reads scale-free. Aggregate ratios (not per-row divides), so
+  robust to zero-fill; guarded like `SAFE_DIVIDE` (zero denominator → `NaN`). Display-only, **never**
+  sort keys; ranking stays RMSE→MAE.
+
+Wiring these in surfaced a **latent gap**: the pipeline's `score_and_track` component only put the
+four ranking metrics into the base64 compare payload, so `compare_backends` → `rank_backends`
+received **no `n_points`** — the WS-A `n_points` column and parity check silently rendered `NaN`
+**in the live pipeline path** (they only ever worked in the offline `run_experiment` CLI, which
+passes full metric dicts). Fixed by adding `pmae`/`prmse`/`n_points` to the compare payload
+(`src/geaptimes/pipelines/components.py`); task-UI `system.Metrics` stays the four finite ranking
+metrics (avoids `NaN` in the artifact). The `n_points` parity check is now actually functional in the
+pipeline. **Requires a runtime-image rebuild before the next live run** (components run baked code).
+
 ## Takeaways
 
 - The comparison is structurally fair: one shared scorer, one inner join, identical formulas.
 - The AutoML gap is genuine (floor budget), not a scoring artefact — proven by `n_points` parity.
 - Non-comparability is now **loud**: differing point counts warn, `n_points` is on the table, and the
   ranking can't be corrupted by a NaN metric.
-- Open follow-up: run the full 3-backend suite once to record AutoML's sMAPE/quantile-loss under the
-  current scorer (all prior AutoML runs predate it).
+- Closed: the 2026-07-01 3-backend run produced AutoML's full sMAPE/quantile-loss suite live under the
+  current scorer with `n_points = 308` parity — no open follow-ups remain.
