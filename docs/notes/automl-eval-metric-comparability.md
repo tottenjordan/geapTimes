@@ -118,6 +118,39 @@ same ranking as RMSE, now scale-free. (AutoML's numbers shift run-to-run — 144
 147.8/187.7 on the prior run — expected non-determinism at the floor budget; still last on every
 metric.)
 
+## AutoML point-metric gap: median-underprediction bias (2026-07-01)
+
+Follow-up to the recurring "AutoML metrics look off" concern. Investigation (a) — pulling the live
+batch-prediction output (`predictions_...T06_29_55...`, this run's AutoML) and joining to actuals —
+isolated the cause. **The metrics are computed identically to the other backends; the gap is the
+objective, not the math.**
+
+Under `minimize-quantile-loss`, AutoML's point forecast `.value` **is the median (q50)**. Daily
+per-station trip counts are right-skewed, so the median sits well below the mean:
+
+| quantity | value |
+| --- | --- |
+| mean actual | 284.4 |
+| mean forecast (= median q50) | 168.1 (~59% of demand) |
+| mean signed error (bias) | **−116.3** (systematic underprediction) |
+| fraction of points under-predicted | **82%** |
+| MAE / RMSE (as reported) | 144.6 / 184.4 |
+| RMSE with global bias removed (variance only) | 143.1 |
+| MAE using q90 as the point instead | 113.4 (≈ TimesFM) |
+
+So ~40% of AutoML's MSE is pure bias, and simply choosing a higher quantile as the point estimate
+pulls MAE into TimesFM territory with the *same model*. Even fully debiased (~143 RMSE) AutoML still
+trails BQML/TimesFM, so a residual floor-budget gap remains — but the headline 2× gap is the
+point-estimate/objective choice.
+
+**Fix applied:** switch AutoML to `optimization_objective: minimize-rmse` (targets the conditional
+*mean*, eliminating the median bias — this is why the statmike notebook uses `minimize-rmse`).
+Trade-off: Vertex allows quantile outputs only with `minimize-quantile-loss`, so the run becomes
+**point-only** — AutoML emits no quantiles and its `quantile_loss` is reported as `NaN` (honest; the
+scorer does not fabricate intervals). Point metrics (MAE/RMSE/sMAPE/MAPE/pMAE/pRMSE) become an
+apples-to-apples comparison against the other backends' mean-targeting point forecasts. The residual
+budget lever remains available separately.
+
 ## Takeaways
 
 - The comparison is structurally fair: one shared scorer, one inner join, identical formulas.

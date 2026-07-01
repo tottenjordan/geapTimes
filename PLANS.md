@@ -130,6 +130,15 @@ Stage-5 backlog, prompted by "AutoML eval metrics haven't looked comparable" + b
   before the next live run** (components run baked code). **Confirmed live** (`...20260701111422`,
   image `sha256:1c110c58…`, 19/19 SUCCEEDED): `ranking.md` now shows `pmae`/`prmse`/`n_points` with
   308-parity (no warning); winner bqml_arima_xreg (pmae 0.27 vs timesfm 0.30 vs automl 0.51).
+- **statmike-parity metrics + AutoML median-bias fix (2026-07-01, `2f7ac42` + `64a3ad2`):** added the
+  two remaining statmike reference metrics — classic `mape` (SAFE_DIVIDE semantics; display-only, may
+  cover fewer points than `n_points`) and `mse` — so the table reports the reference's full SQL set.
+  Investigation (a) traced AutoML's point-metric gap to **median-underprediction bias**: under
+  `minimize-quantile-loss` the point forecast is the median q50 (~59% of demand; mean signed error
+  −116, 82% under, ~40% of MSE is bias) — the math is identical across backends, the objective is the
+  cause. Switched AutoML to `optimization_objective: minimize-rmse` (targets the mean); Vertex allows
+  quantiles only with quantile-loss, so the run is now **point-only** (AutoML `quantile_loss` = NaN;
+  `_flatten_automl_output` fills qXX with NaN). **Next live run needs an image rebuild.**
 - **Backlog dispositions (declined this session):** **#2 `dsl.ParallelFor`** — deferred; the backends
   are a heterogeneous compile-time loop, reserve ParallelFor for a homogeneous inner axis (DOE/backtest
   windows); rationale `docs/notes/pipeline-parallelfor-deferred.md`. **#4 AutoML tabular workflow /
