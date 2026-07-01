@@ -108,10 +108,26 @@ Stage-5 backlog, prompted by "AutoML eval metrics haven't looked comparable" + b
   AutoML scored over `n_points=308`, **identical** to TimesFM/BQML → **no scoring/alignment bug**; the
   AutoML MAE gap (142 vs 78–85) is real underperformance at the floor budget. The hardening makes
   non-comparability *loud* (differing point counts warn; `n_points` on the table; NaN can't corrupt the
-  sort) rather than changing any metric value. **Still open:** AutoML's full sMAPE/quantile-loss suite
-  has **never** been produced live (all successful AutoML runs predate the 5.2 scorer; 5.5 ran
-  `--disable-automl`) — a full 3-backend confirmation run (~2.5 h + AutoML budget) would close it, offered
-  separately, not required by A/B.
+  sort) rather than changing any metric value.
+- **AutoML full-suite confirmation run (2026-07-01, closed):** ran the full 3-backend pipeline
+  `geaptimes-comparison-top25-h14-t14-v14-20260701040623` (`--no-cache`, runtime image rebuilt on the
+  merged WS-A code; all 19 tasks SUCCEEDED). All three backends scored over `n_points=308` (exact
+  parity → no parity warning), and AutoML's full suite was produced live for the first time:
+  bqml_arima_xreg rmse 101.72 / mae 77.72 / sMAPE 42.66 / q-loss 30.27 (**winner**); timesfm
+  113.65 / 85.51 / 39.26 / 31.30; automl 187.71 / 147.78 / 63.93 / 65.11. AutoML trails on **every**
+  metric — floor-budget underperformance reconfirmed, not a scoring artefact. `teardown-serving`
+  succeeded (endpoint + served model removed, `keep_deployed=false`). Findings in
+  `docs/notes/automl-eval-metric-comparability.md`.
+- **Demand-normalized metrics + payload fix (2026-07-01, `fffd0c2`):** benchmarked our scorer against
+  the statmike AutoML SQL reference — MAE/RMSE are formula-identical; classic MAPE stays rejected (its
+  `SAFE_DIVIDE` drops zero-actual days and breaks denominator parity), sMAPE retained. Adopted its one
+  gap-filler: **`pmae` = Σ|error|/Σactual** and **`prmse` = RMSE/mean(actual)** — scale-free,
+  demand-normalized reads of absolute quality, display-only (never sort keys), guarded like
+  `SAFE_DIVIDE` (zero demand → NaN). Fixed a latent gap this surfaced: the pipeline `score_and_track`
+  compare payload carried only the four ranking metrics, so `n_points`/`pmae`/`prmse` never reached
+  `rank_backends` in the live pipeline (WS-A's `n_points` column + parity check were silently NaN
+  there; only the offline CLI worked). Payload now complete → **requires a runtime-image rebuild
+  before the next live run** (components run baked code).
 - **Backlog dispositions (declined this session):** **#2 `dsl.ParallelFor`** — deferred; the backends
   are a heterogeneous compile-time loop, reserve ParallelFor for a homogeneous inner axis (DOE/backtest
   windows); rationale `docs/notes/pipeline-parallelfor-deferred.md`. **#4 AutoML tabular workflow /
