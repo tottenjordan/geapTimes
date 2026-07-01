@@ -152,12 +152,20 @@ def build_components(image: str) -> PipelineComponents:  # noqa: PLR0915, C901 -
         result = steps.score_and_track_step(cfg, model_name, frame, tracker=ExperimentTracker(cfg))
         scores = result.record.metrics
         # The standardized suite (Stage 5): point error + sMAPE + quantile loss, computed once by
-        # the shared scorer and surfaced uniformly for every backend.
-        reported = {key: float(scores[key]) for key in ("mae", "rmse", "smape", "quantile_loss")}
-        # Scalar metrics on the task itself (the system.Metrics artifact KFP renders in the Vertex
-        # Pipelines UI), in addition to the Vertex ExperimentRun logged inside the step.
-        for key, value in reported.items():
+        # the shared scorer and surfaced uniformly for every backend. These four are the ranking
+        # metrics; log them as scalar metrics on the task itself (the system.Metrics artifact KFP
+        # renders in the Vertex Pipelines UI), in addition to the Vertex ExperimentRun logged inside
+        # the step. Keep the UI set to these finite error metrics (avoid NaN in the artifact).
+        ranking = {key: float(scores[key]) for key in ("mae", "rmse", "smape", "quantile_loss")}
+        for key, value in ranking.items():
             metrics.log_metric(key, value)
+        # The compare payload additionally carries the display-only metrics -- demand-normalized
+        # pmae/prmse and n_points -- so the cross-backend table can show scale-free error and the
+        # per-backend denominator (the n_points parity check keys on this). These never rank.
+        reported = {
+            **ranking,
+            **{key: float(scores[key]) for key in ("pmae", "prmse", "n_points")},
+        }
         # Return base64(JSON), not a dict or raw JSON string. compare_backends collects these into a
         # ``list`` param, which KFP builds by *textual* placeholder substitution into the executor
         # input JSON -- a raw JSON value's quotes would break that JSON (and a dict has no

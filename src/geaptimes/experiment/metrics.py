@@ -46,6 +46,8 @@ class Evaluation:
     rmse: float
     smape: float
     quantile_loss: float
+    pmae: float
+    prmse: float
     n_points: float
     per_series: list[dict[str, Any]] = field(default_factory=list)
 
@@ -56,6 +58,8 @@ class Evaluation:
             "rmse": self.rmse,
             "smape": self.smape,
             "quantile_loss": self.quantile_loss,
+            "pmae": self.pmae,
+            "prmse": self.prmse,
             "n_points": self.n_points,
         }
 
@@ -110,11 +114,11 @@ def evaluate(  # noqa: PLR0913 - predictions + actuals + 3 config column names +
     """Return the full standardized :class:`Evaluation` for ``predictions`` vs ``actuals``.
 
     Computes aggregate ``mae``, ``rmse``, ``smape`` (percent, guarded), ``quantile_loss`` (mean
-    pinball loss across ``quantiles``), and ``n_points`` — plus a ``per_series`` breakdown (the same
-    metrics grouped by series, sorted by series name). ``mae``/``rmse``/``n_points`` match
-    :func:`point_metrics` exactly. ``predictions`` must carry the standardized ``qXX`` quantile
-    columns for the requested ``quantiles`` (every backend emits them). Inner-joined on
-    (series, date); raises if the overlap is empty.
+    pinball loss across ``quantiles``), the demand-normalized ``pmae``/``prmse``, and ``n_points`` —
+    plus a ``per_series`` breakdown (the same metrics grouped by series, sorted by series name).
+    ``mae``/``rmse``/``n_points`` match :func:`point_metrics` exactly. ``predictions`` must carry
+    the standardized ``qXX`` quantile columns for the requested ``quantiles`` (every backend emits
+    them). Inner-joined on (series, date); raises if the overlap is empty.
     """
     levels = QUANTILES if quantiles is None else quantiles
     value_cols = [FORECAST_COLUMN, *(quantile_column(q) for q in levels)]
@@ -203,10 +207,21 @@ def _summary(merged: "pd.DataFrame", quantiles: list[float]) -> dict[str, float]
         pinball.append(np.maximum(q * delta, (q - 1.0) * delta))
     quantile_loss = float(np.mean(np.concatenate(pinball))) if pinball else 0.0
 
+    # Demand-normalized errors: MAE / RMSE expressed relative to actual demand, so absolute quality
+    # reads as a fraction of typical volume (robust to zero-fill days — an aggregate ratio, not a
+    # per-row divide). Guarded like BigQuery's SAFE_DIVIDE: a zero denominator yields NaN, not inf.
+    rmse = float(np.sqrt(np.mean(np.square(error))))
+    actual_sum = float(np.sum(actual))
+    actual_mean = float(np.mean(actual))
+    pmae = float(np.sum(np.abs(error))) / actual_sum if actual_sum != 0.0 else float("nan")
+    prmse = rmse / actual_mean if actual_mean != 0.0 else float("nan")
+
     return {
         "mae": float(np.mean(np.abs(error))),
-        "rmse": float(np.sqrt(np.mean(np.square(error)))),
+        "rmse": rmse,
         "smape": float(np.mean(smape) * 100.0),
         "quantile_loss": quantile_loss,
+        "pmae": pmae,
+        "prmse": prmse,
         "n_points": float(len(merged)),
     }
