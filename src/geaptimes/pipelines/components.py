@@ -140,6 +140,7 @@ def build_components(image: str) -> PipelineComponents:  # noqa: PLR0915, C901 -
     ) -> str:
         import base64
         import json
+        import math
 
         import pandas as pd
 
@@ -155,10 +156,13 @@ def build_components(image: str) -> PipelineComponents:  # noqa: PLR0915, C901 -
         # the shared scorer and surfaced uniformly for every backend. These four are the ranking
         # metrics; log them as scalar metrics on the task itself (the system.Metrics artifact KFP
         # renders in the Vertex Pipelines UI), in addition to the Vertex ExperimentRun logged inside
-        # the step. Keep the UI set to these finite error metrics (avoid NaN in the artifact).
+        # the step. Only log finite values: a point-only backend (AutoML under minimize-rmse) emits
+        # no quantiles, so quantile_loss is NaN, which the artifact/metadata layer rejects. The full
+        # value (NaN included) still travels in the compare payload below and renders in the table.
         ranking = {key: float(scores[key]) for key in ("mae", "rmse", "smape", "quantile_loss")}
         for key, value in ranking.items():
-            metrics.log_metric(key, value)
+            if math.isfinite(value):
+                metrics.log_metric(key, value)
         # The compare payload additionally carries the display-only metrics -- statmike-parity
         # mape/mse, demand-normalized pmae/prmse, and n_points -- so the cross-backend table shows
         # the full reference set, scale-free error, and each backend's denominator (the n_points

@@ -11,6 +11,7 @@ whole tracker exercises offline with no cloud calls.
 """
 
 import json
+import math
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
@@ -92,8 +93,24 @@ class ExperimentTracker:
         self._resolve_aiplatform().log_params(_coerce_params(params))
 
     def log_metrics(self, metrics: dict[str, float]) -> None:
-        """Log numeric run metrics."""
-        self._resolve_aiplatform().log_metrics({key: float(val) for key, val in metrics.items()})
+        """Log numeric run metrics, dropping non-finite values.
+
+        Vertex's ExperimentRun metadata service rejects ``NaN``/``Infinity`` outright (400
+        INVALID_ARGUMENT). A metric can legitimately be non-finite -- e.g. a point-only backend
+        (AutoML under ``minimize-rmse``) emits no quantiles, so ``quantile_loss`` is ``NaN`` -- so
+        we drop non-finite entries here rather than let the whole run fail. The value is still
+        honestly reported downstream (the comparison table renders ``NaN`` and ``rank_backends`` is
+        NaN-safe); this only governs what Vertex is asked to persist.
+        """
+        finite = {key: float(val) for key, val in metrics.items() if math.isfinite(val)}
+        dropped = [key for key in metrics if key not in finite]
+        if dropped:
+            logger.warning(
+                "dropping non-finite metric(s) from Vertex ExperimentRun (unsupported by the "
+                "metadata service): %s",
+                ", ".join(sorted(dropped)),
+            )
+        self._resolve_aiplatform().log_metrics(finite)
 
     def artifact_base(self, run_name: str) -> str:
         """The ``gs://`` prefix under which this run's artifacts are written."""

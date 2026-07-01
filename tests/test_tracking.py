@@ -82,6 +82,17 @@ def test_log_metrics_casts_to_float() -> None:
     assert aip.metrics[0] == {"mae": 1.0, "rmse": 2.5}
 
 
+def test_log_metrics_drops_non_finite(caplog: pytest.LogCaptureFixture) -> None:
+    # Vertex's metadata service rejects NaN/Inf; a point-only backend (AutoML minimize-rmse) emits
+    # quantile_loss=NaN, so the tracker must drop it rather than fail the whole run.
+    tracker, aip, _ = _tracker()
+    with caplog.at_level("WARNING"):
+        tracker.log_metrics({"mae": 1.0, "quantile_loss": float("nan"), "prmse": float("inf")})
+    assert aip.metrics[0] == {"mae": 1.0}
+    assert "quantile_loss" in caplog.text
+    assert "prmse" in caplog.text
+
+
 def test_artifact_base_uri() -> None:
     tracker, _, _ = _tracker()
     assert tracker.artifact_base("run-1") == "gs://b/experiments/exp/run-1"
