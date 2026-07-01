@@ -71,7 +71,17 @@ def _backend_result(model: str) -> BackendResult:
         run_name="r",
         model=model,
         overrides={},
-        metrics={"mae": 1.5, "rmse": 2.5, "smape": 3.0, "quantile_loss": 0.5, "n_points": 2},
+        metrics={
+            "mae": 1.5,
+            "rmse": 2.5,
+            "smape": 3.0,
+            "quantile_loss": 0.5,
+            "mape": 0.2,
+            "mse": 6.25,
+            "pmae": 0.25,
+            "prmse": 0.30,
+            "n_points": 2,
+        },
     )
     return BackendResult(record=record, predictions=_predictions())
 
@@ -220,19 +230,27 @@ def test_score_and_track_component(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
     out = COMPS.score_and_track.python_func(
         config_json=CFG_JSON, model_name="bqml_arima_xreg", predictions=art, metrics=metrics
     )
-    # The standardized suite is logged as scalar Metrics for the Vertex Pipelines UI (Stage 5).
+    # Only the finite ranking metrics are logged as scalar Metrics for the Vertex Pipelines UI
+    # (Stage 5); the demand-normalized / count columns ride the compare payload instead.
     assert metrics.scalars == {"mae": 1.5, "rmse": 2.5, "smape": 3.0, "quantile_loss": 0.5}
     # Substitution-safe contract: score_and_track outputs are collected into compare_backends'
     # ``rows`` list, which KFP builds by *textual* substitution into the executor-input JSON. The
     # output must therefore contain no character (``"`` ``,`` ``]``) that could break that JSON --
     # i.e. it must stay within the base64 alphabet. (Regressing to raw JSON re-breaks the live run.)
     assert re.fullmatch(r"[A-Za-z0-9+/=]+", out)
+    # The payload carries the ranking metrics plus the display-only pmae/prmse/n_points, so the
+    # cross-backend table sees demand-normalized error and each backend's denominator.
     assert json.loads(base64.b64decode(out)) == {
         "model": "bqml_arima_xreg",
         "mae": 1.5,
         "rmse": 2.5,
         "smape": 3.0,
         "quantile_loss": 0.5,
+        "mape": 0.2,
+        "mse": 6.25,
+        "pmae": 0.25,
+        "prmse": 0.30,
+        "n_points": 2.0,
     }
     assert seen["model_name"] == "bqml_arima_xreg"
     assert isinstance(seen["tracker"], _FakeTracker)
@@ -298,6 +316,11 @@ def test_compare_backends_component(tmp_path: Path) -> None:
                     "rmse": 110.0,
                     "smape": 20.0,
                     "quantile_loss": 9.0,
+                    "mape": 0.21,
+                    "mse": 12100.0,
+                    "pmae": 0.26,
+                    "prmse": 0.35,
+                    "n_points": 308.0,
                 }
             ).encode()
         ),
@@ -309,6 +332,11 @@ def test_compare_backends_component(tmp_path: Path) -> None:
                     "rmse": 101.0,
                     "smape": 18.0,
                     "quantile_loss": 8.0,
+                    "mape": 0.19,
+                    "mse": 10201.0,
+                    "pmae": 0.25,
+                    "prmse": 0.32,
+                    "n_points": 308.0,
                 }
             ).encode()
         ),
@@ -318,9 +346,26 @@ def test_compare_backends_component(tmp_path: Path) -> None:
     saved = json.loads(Path(art.path).read_text(encoding="utf-8"))
     assert saved["winner"] == "bqml_arima_xreg"
     assert [r["model"] for r in saved["ranking"]] == ["bqml_arima_xreg", "timesfm"]
-    # The Markdown ranking artifact (Stage 5): full metric set, winner flagged, lowest RMSE first.
+    # The Markdown ranking artifact (Stage 5): full metric set + display columns, winner flagged,
+    # lowest RMSE first. The demand-normalized pmae/prmse and the n_points denominator ride the
+    # compare payload through to the table (no parity warning here — both backends scored over 308).
     md_text = Path(md.path).read_text(encoding="utf-8")
-    assert "| rank | model | mae | rmse | smape | quantile_loss |" in md_text
+    header_cols = [
+        "rank",
+        "model",
+        "mae",
+        "rmse",
+        "smape",
+        "quantile_loss",
+        "mape",
+        "mse",
+        "pmae",
+        "prmse",
+        "n_points",
+    ]
+    assert "| " + " | ".join(header_cols) + " |" in md_text
     assert "bqml_arima_xreg (winner)" in md_text
+    assert "⚠️" not in md_text
     body = [line for line in md_text.splitlines() if line.startswith("| 1 ")]
     assert "bqml_arima_xreg" in body[0]
+    assert body[0].endswith("| 308 |")  # n_points now reaches the pipeline comparison table

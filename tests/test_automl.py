@@ -1,5 +1,7 @@
 """Offline tests for AutoMLForecaster (config translation + fit wiring; no Vertex calls)."""
 
+import math
+
 import pandas as pd
 import pytest
 
@@ -131,8 +133,8 @@ def test_validate_config_flags_untransformed_role_column(monkeypatch: pytest.Mon
         fc.validate_config()
 
 
-def test_validate_config_flags_non_quantile_objective() -> None:
-    fc = _forecaster(
+def _minimize_rmse_forecaster() -> AutoMLForecaster:
+    return _forecaster(
         models=[
             {
                 "name": "automl",
@@ -140,8 +142,21 @@ def test_validate_config_flags_non_quantile_objective() -> None:
             }
         ]
     )
-    with pytest.raises(ValueError, match="optimization_objective must be 'minimize-quantile-loss'"):
-        fc.validate_config()
+
+
+def test_minimize_rmse_is_point_only_and_valid() -> None:
+    # minimize-rmse targets the mean; Vertex allows quantiles only with minimize-quantile-loss, so
+    # this run must request NO quantiles -- and that is a valid config (no raise).
+    fc = _minimize_rmse_forecaster()
+    assert "quantiles" not in fc.run_kwargs()
+    assert fc.training_job_kwargs()["optimization_objective"] == "minimize-rmse"
+    fc.validate_config()  # point-only is valid
+
+
+def test_quantile_loss_objective_requests_quantiles() -> None:
+    # the default objective still emits the standardized quantile levels.
+    kw = _forecaster().run_kwargs()
+    assert kw["quantiles"] == QUANTILES
 
 
 def test_validate_config_flags_transformed_series_column(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -295,6 +310,28 @@ def test_predict_flattens_nested_vertex_struct() -> None:
     # matched by level, not position: q10=8, q50=10, q90=12
     assert (first["q10"], first["q50"], first["q90"]) == (8.0, 10.0, 12.0)
     assert list(preds["horizon_step"]) == [1, 2]
+
+
+def test_flatten_point_only_output_fills_nan_quantiles() -> None:
+    # A minimize-rmse run emits no quantile fields (point-only); qXX must become NaN, not error,
+    # so the standardized schema holds and the scorer reports quantile_loss as NaN.
+    cfg = _cfg()
+    raw = pd.DataFrame(
+        {
+            "start_station_name": ["s0", "s0"],
+            "date": pd.to_datetime(["2018-05-18", "2018-05-19"]),
+            "predicted_num_trips": [
+                {"value": 10.0, "quantile_values": [], "quantile_predictions": []},
+                {"value": 11.0},  # quantile fields entirely absent
+            ],
+        }
+    )
+    fc = AutoMLForecaster(cfg.models[0], cfg, prediction_reader=lambda: raw)
+    preds = fc.predict().predictions
+    assert list(preds.columns) == PREDICTION_COLUMNS
+    assert list(preds["forecast"]) == [10.0, 11.0]
+    for level in ("q10", "q30", "q50", "q70", "q90"):
+        assert all(math.isnan(v) for v in preds[level])
 
 
 def test_flatten_raises_on_missing_quantile_level() -> None:

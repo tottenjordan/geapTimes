@@ -8,10 +8,28 @@ from geaptimes.experiment.comparison import (
 )
 
 
-def _metrics(
-    mae: float, rmse: float, smape: float, ql: float, n_points: float = 308.0
+def _metrics(  # noqa: PLR0913 - mirrors the full metric set (ranking + report + count)
+    mae: float,
+    rmse: float,
+    smape: float,
+    ql: float,
+    n_points: float = 308.0,
+    mape: float = 0.20,
+    mse: float = 12000.0,
+    pmae: float = 0.25,
+    prmse: float = 0.30,
 ) -> dict[str, float]:
-    return {"mae": mae, "rmse": rmse, "smape": smape, "quantile_loss": ql, "n_points": n_points}
+    return {
+        "mae": mae,
+        "rmse": rmse,
+        "smape": smape,
+        "quantile_loss": ql,
+        "mape": mape,
+        "mse": mse,
+        "pmae": pmae,
+        "prmse": prmse,
+        "n_points": n_points,
+    }
 
 
 def test_rank_backends_orders_by_rmse_then_mae() -> None:
@@ -23,8 +41,16 @@ def test_rank_backends_orders_by_rmse_then_mae() -> None:
     comp = rank_backends(results)
     assert comp.winner == "automl"
     assert [r["model"] for r in comp.ranking] == ["automl", "bqml_arima_xreg", "timesfm"]
-    # every row carries the full metric set + display n_points, uniform shape regardless of source
-    assert set(comp.ranking[0]) == {"model", *RANKING_METRICS, "n_points"}
+    # every row carries the full metric set + display metrics, uniform shape regardless of source
+    assert set(comp.ranking[0]) == {
+        "model",
+        *RANKING_METRICS,
+        "mape",
+        "mse",
+        "pmae",
+        "prmse",
+        "n_points",
+    }
     assert not comp.warnings  # equal n_points ⇒ no comparability warning
 
 
@@ -85,12 +111,26 @@ def test_render_ranking_markdown_flags_winner_and_shows_all_metrics() -> None:
     )
     md = render_ranking_markdown(comp)
     lines = md.splitlines()
-    assert lines[0] == "| rank | model | mae | rmse | smape | quantile_loss | n_points |"
-    assert lines[1] == "| --- | --- | --- | --- | --- | --- | --- |"
+    header_cols = [
+        "rank",
+        "model",
+        "mae",
+        "rmse",
+        "smape",
+        "quantile_loss",
+        "mape",
+        "mse",
+        "pmae",
+        "prmse",
+        "n_points",
+    ]
+    assert lines[0] == "| " + " | ".join(header_cols) + " |"
+    assert lines[1] == "| " + " | ".join(["---"] * len(header_cols)) + " |"
     assert lines[2].startswith("| 1 | bqml_arima_xreg (winner) |")
     assert "timesfm" in lines[3]
     assert "(winner)" not in lines[3]
     assert "101.0000" in lines[2]  # 4-decimal formatting for error metrics
+    assert "0.2500" in lines[2]  # pmae rendered as a 4-decimal rate, not an integer
     assert lines[2].endswith("| 308 |")  # n_points as an integer, not 308.0000
 
 

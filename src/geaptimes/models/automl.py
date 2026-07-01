@@ -149,6 +149,16 @@ class AutoMLForecaster(Forecaster):
             "labels": dict(RESOURCE_LABELS),
         }
 
+    def _requests_quantiles(self) -> bool:
+        """Whether this run emits quantile forecasts.
+
+        Vertex ties quantile output to the ``minimize-quantile-loss`` objective: ``quantiles`` may
+        only be passed with that objective, and any other objective (e.g. ``minimize-rmse``, which
+        targets the conditional *mean*) is point-only. So the objective decides whether we request
+        quantiles at all.
+        """
+        return self.params.optimization_objective == _QUANTILE_LOSS_OBJECTIVE
+
     def run_kwargs(self) -> dict[str, Any]:
         """``.run()`` kwargs: column roles, horizon/context, granularity, split, quantiles."""
         data = self.cfg.data
@@ -163,7 +173,7 @@ class AutoMLForecaster(Forecaster):
         available = list(covariates.available_at_forecast_columns)
         if data.time_column not in available:
             available.append(data.time_column)
-        return {
+        kwargs: dict[str, Any] = {
             "target_column": data.target_column,
             "time_column": data.time_column,
             "time_series_identifier_column": data.series_column,
@@ -180,11 +190,14 @@ class AutoMLForecaster(Forecaster):
             # predefined `splits` column can't be used here: Vertex requires the values
             # TRAIN/VALIDATION/TEST, but the train table has no TEST rows by design.) The backtest
             # stays honest -- AutoML never sees the TEST window, which we score via batch predict.
-            "quantiles": list(QUANTILES),
             "holiday_regions": self._holiday_regions(),
             "model_display_name": self.display_name,
             "model_labels": dict(RESOURCE_LABELS),
         }
+        # quantiles are only valid with minimize-quantile-loss; a minimize-rmse run is point-only.
+        if self._requests_quantiles():
+            kwargs["quantiles"] = list(QUANTILES)
+        return kwargs
 
     def validate_config(self) -> None:
         """Fail fast on the Vertex AutoML Forecasting column-role invariants we know about.
@@ -200,7 +213,10 @@ class AutoMLForecaster(Forecaster):
         specs = self._column_specs()
         target, time = data.target_column, data.time_column
         problems: list[str] = []
-        # We always pass quantiles, so Vertex demands the quantile-loss objective.
+        # Vertex ties quantile output to the quantile-loss objective: quantiles may only be passed
+        # with minimize-quantile-loss. run_kwargs() enforces this by only requesting quantiles for
+        # that objective, so this guard should never fire -- it stays as a defensive invariant. A
+        # minimize-rmse (point-only) run is valid and requests no quantiles.
         if run.get("quantiles") and self.params.optimization_objective != _QUANTILE_LOSS_OBJECTIVE:
             problems.append(
                 f"optimization_objective must be {_QUANTILE_LOSS_OBJECTIVE!r} when quantiles are "
@@ -343,15 +359,26 @@ class AutoMLForecaster(Forecaster):
         records: list[dict[str, Any]] = []
         for _, row in raw.iterrows():
             struct = row[struct_col]
-            levels = [float(level) for level in struct[_QUANTILE_VALUES_FIELD]]
-            preds = list(struct[_QUANTILE_PREDICTIONS_FIELD])
             record: dict[str, Any] = {
                 data.series_column: row[data.series_column],
                 data.time_column: row[data.time_column],
                 _PREDICTED_VALUE_COLUMN: float(struct[_PREDICTED_VALUE_COLUMN]),
             }
-            for level in QUANTILES:
-                record[quantile_column(level)] = float(preds[_match_quantile_index(levels, level)])
+            qvals = struct.get(_QUANTILE_VALUES_FIELD)
+            qpreds = struct.get(_QUANTILE_PREDICTIONS_FIELD)
+            if qvals is not None and len(qvals) and qpreds is not None:
+                levels = [float(level) for level in qvals]
+                preds = list(qpreds)
+                for level in QUANTILES:
+                    record[quantile_column(level)] = float(
+                        preds[_match_quantile_index(levels, level)]
+                    )
+            else:
+                # A minimize-rmse (point-only) run emits no quantile fields; fill qXX with NaN so
+                # the standardized schema still holds and the scorer reports quantile_loss as NaN
+                # (honest: no quantile forecast) rather than fabricating intervals from the point.
+                for level in QUANTILES:
+                    record[quantile_column(level)] = float("nan")
             records.append(record)
         return pd.DataFrame.from_records(records)
 

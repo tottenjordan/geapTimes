@@ -1,6 +1,7 @@
 """Offline tests for the point-metric helper and the Stage 5 standardized eval suite."""
 
 import logging
+import math
 
 import pandas as pd
 import pytest
@@ -166,6 +167,48 @@ def test_evaluate_quantile_loss_exact() -> None:
 
     losses = [pinball(q, qpreds[q][0]) for q in QUANTILES]
     assert out.quantile_loss == pytest.approx(sum(losses) / len(losses))
+
+
+def test_evaluate_pmae_and_prmse_exact() -> None:
+    # actual 12,12 vs forecast 10,12 -> errors -2,0 ; |errors| 2,0 ; squared 4,0
+    # pMAE  = sum|err| / sum(actual)      = 2 / 24
+    # pRMSE = sqrt(mean(sq)) / mean(actual) = sqrt(2) / 12
+    preds = _preds(["s", "s"], ["2018-05-18", "2018-05-19"], [10.0, 12.0])
+    actuals = _actuals(["s", "s"], ["2018-05-18", "2018-05-19"], [12.0, 12.0])
+    out = _evaluate(preds, actuals)
+    assert out.pmae == pytest.approx(2.0 / 24.0)
+    assert out.prmse == pytest.approx((2**0.5) / 12.0)
+
+
+def test_evaluate_mape_and_mse_exact() -> None:
+    # actual 12,12 vs forecast 10,12 -> errors -2,0 ; squared 4,0
+    # MSE  = mean(4,0) = 2.0
+    # MAPE = mean(|err|/actual) = mean(2/12, 0/12) = (1/6)/... = (0.16667 + 0)/2
+    preds = _preds(["s", "s"], ["2018-05-18", "2018-05-19"], [10.0, 12.0])
+    actuals = _actuals(["s", "s"], ["2018-05-18", "2018-05-19"], [12.0, 12.0])
+    out = _evaluate(preds, actuals)
+    assert out.mse == pytest.approx(2.0)
+    assert out.mape == pytest.approx(((2.0 / 12.0) + 0.0) / 2.0)
+
+
+def test_evaluate_mape_drops_zero_actual_points() -> None:
+    # SAFE_DIVIDE semantics: the zero-actual point is dropped from the MAPE mean (not counted),
+    # so MAPE is computed over 1 of the 2 points -- even though n_points stays 2.
+    preds = _preds(["s", "s"], ["2018-05-18", "2018-05-19"], [10.0, 5.0])
+    actuals = _actuals(["s", "s"], ["2018-05-18", "2018-05-19"], [12.0, 0.0])
+    out = _evaluate(preds, actuals)
+    assert out.n_points == 2.0
+    assert out.mape == pytest.approx(2.0 / 12.0)  # only the actual=12 point contributes
+
+
+def test_evaluate_normalized_metrics_nan_when_demand_zero() -> None:
+    # all-zero actuals -> zero denominator; guarded like SAFE_DIVIDE, yields NaN (not inf/error).
+    preds = _preds(["s"], ["2018-05-18"], [5.0])
+    actuals = _actuals(["s"], ["2018-05-18"], [0.0])
+    out = _evaluate(preds, actuals)
+    assert math.isnan(out.pmae)
+    assert math.isnan(out.prmse)
+    assert math.isnan(out.mape)  # every point dropped by SAFE_DIVIDE -> no MAPE
 
 
 def test_evaluate_per_series_breakdown() -> None:

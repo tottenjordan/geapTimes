@@ -19,8 +19,17 @@ from typing import Any
 # Metrics shown in the ranking table, in column order. Ranking still keys on RMSE then MAE.
 RANKING_METRICS: list[str] = ["mae", "rmse", "smape", "quantile_loss"]
 
-# Extra display-only columns appended after the ranking metrics (never sort keys).
-_DISPLAY_METRICS: list[str] = ["n_points"]
+# Reporting metrics shown after the ranking metrics: the statmike-parity SQL set (classic `mape`,
+# `mse`) plus the demand-normalized `pmae`/`prmse`. Display-only, 4-decimal formatted, never sort
+# keys — they let results line up with the statmike reference notebook and read quality relative to
+# demand. (`mape` uses SAFE_DIVIDE semantics and may cover fewer points than `n_points`.)
+_DISPLAY_REPORT_METRICS: list[str] = ["mape", "mse", "pmae", "prmse"]
+
+# Integer-formatted count column; display-only.
+_DISPLAY_COUNT_METRICS: list[str] = ["n_points"]
+
+# All display-only columns appended after the ranking metrics, in render order.
+_DISPLAY_METRICS: list[str] = [*_DISPLAY_REPORT_METRICS, *_DISPLAY_COUNT_METRICS]
 
 
 @dataclass
@@ -100,8 +109,9 @@ def render_ranking_markdown(comparison: Comparison) -> str:
     for idx, row in enumerate(comparison.ranking, start=1):
         flag = " (winner)" if row["model"] == comparison.winner else ""
         metric_cells = [_format_metric(row[m]) for m in RANKING_METRICS]
-        count_cells = [_format_count(row[m]) for m in _DISPLAY_METRICS]
-        cells = [str(idx), f"{row['model']}{flag}", *metric_cells, *count_cells]
+        report_cells = [_format_metric(row[m]) for m in _DISPLAY_REPORT_METRICS]
+        count_cells = [_format_count(row[m]) for m in _DISPLAY_COUNT_METRICS]
+        cells = [str(idx), f"{row['model']}{flag}", *metric_cells, *report_cells, *count_cells]
         lines.append("| " + " | ".join(cells) + " |")
     table = "\n".join(lines) + "\n"
 
