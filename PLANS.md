@@ -138,7 +138,16 @@ Stage-5 backlog, prompted by "AutoML eval metrics haven't looked comparable" + b
   −116, 82% under, ~40% of MSE is bias) — the math is identical across backends, the objective is the
   cause. Switched AutoML to `optimization_objective: minimize-rmse` (targets the mean); Vertex allows
   quantiles only with quantile-loss, so the run is now **point-only** (AutoML `quantile_loss` = NaN;
-  `_flatten_automl_output` fills qXX with NaN). **Next live run needs an image rebuild.**
+  `_flatten_automl_output` fills qXX with NaN).
+- **Point-only NaN-sink fix + live confirmation (2026-07-01, `b476abc`):** the first `minimize-rmse`
+  live run (`…20260701150736`) failed at `score-and-track-2` — Vertex's ExperimentRun metadata
+  service rejects `NaN`/`Infinity` (400 INVALID_ARGUMENT), and point-only AutoML logs
+  `quantile_loss=NaN`. Guarded both metric sinks (`ExperimentTracker.log_metrics` drops non-finite
+  with a WARNING; the KFP `system.Metrics` artifact logs only finite ranking metrics); the NaN still
+  travels in the compare payload and renders in the table (`rank_backends` is NaN-safe). Re-ran on the
+  rebuilt image (`sha256:0569f19f…`): run `…20260701183919`, **all 19/19 SUCCEEDED**, `n_points=308`
+  parity. `minimize-rmse` dropped AutoML **MAE 144.6→130.3, RMSE 184.4→169.5** (median bias removed);
+  AutoML still last on RMSE/MAE (residual floor budget), `quantile_loss=NaN` handled cleanly.
 - **Backlog dispositions (declined this session):** **#2 `dsl.ParallelFor`** — deferred; the backends
   are a heterogeneous compile-time loop, reserve ParallelFor for a homogeneous inner axis (DOE/backtest
   windows); rationale `docs/notes/pipeline-parallelfor-deferred.md`. **#4 AutoML tabular workflow /
